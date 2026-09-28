@@ -1,3 +1,4 @@
+using System.Reflection;
 using ShiroBot.Adapter.QQPlatform.AdapterImpl;
 using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
@@ -49,6 +50,10 @@ public sealed class QQPlatformAdapter : IBotAdapter
     public async Task StartAsync()
     {
         await StopAsync().ConfigureAwait(false);
+        var buildTime = typeof(QQPlatformAdapter).Assembly
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(attribute => attribute.Key == "BuildTimeUtc")?.Value;
+        Logger.Info($"QQ Official Adapter build time (UTC): {buildTime ?? "unknown"}");
         var config = Config.Load<QQPlatformConfig>();
         var configChanged = config.NormalizeLegacyTokenEndpoint();
         if (config.Intents == 1UL << 25)
