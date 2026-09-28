@@ -20,6 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="ShiroBot.QQPlatform.Tests" />
+    <AssemblyMetadata Include="BuildTimeUtc" Value="$([System.DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))" />
   </ItemGroup>
   <Target Name="RestoreQQPlatformContractToOutput" AfterTargets="RemoveShiroBotPluginDependencyFile"
           Condition="'$(ShiroBotPluginPackagingEnabled)' == 'true'">
