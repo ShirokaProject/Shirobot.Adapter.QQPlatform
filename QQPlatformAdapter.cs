@@ -2,6 +2,7 @@ using ShiroBot.Adapter.QQPlatform.AdapterImpl;
 using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
 using ShiroBot.QQPlatform.Contracts;
+using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Abstractions;
 using ShiroBot.SDK.Adapter;
 using ShiroBot.SDK.Config;
@@ -10,6 +11,7 @@ using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
 
 [assembly: ShiroBotApiCompatibility("0.9", "0.9")]
+[assembly: RequiresShiroBotPackage("shirobot.model.qq", MinimumVersion = "0.9.2")]
 
 namespace ShiroBot.Adapter.QQPlatform;
 
@@ -28,6 +30,7 @@ public sealed class QQPlatformAdapter : IBotAdapter
     private HttpClient? _http;
     private QQGatewayClient? _gateway;
     private QQMessageService? _messages;
+    private QQOfficialMessageService? _officialMessages;
     private QQOpenApiClient? _api;
     private string? _selfId;
     private QQPlatformConfig? _config;
@@ -41,7 +44,7 @@ public sealed class QQPlatformAdapter : IBotAdapter
     public IEventService Event => _events;
 
     public TService? GetExtension<TService>() where TService : class =>
-        _messages as TService ?? this as TService;
+        _officialMessages as TService ?? _messages as TService ?? this as TService;
 
     public async Task StartAsync()
     {
@@ -61,6 +64,7 @@ public sealed class QQPlatformAdapter : IBotAdapter
         var api = new QQOpenApiClient(_http, config, tokens);
         _api = api;
         _messages = new QQMessageService(api, Logger);
+        _officialMessages = new QQOfficialMessageService(api, _messages, Logger);
         _gateway = new QQGatewayClient(config, api, tokens, DispatchAsync, user =>
         {
             _selfId = user?.Id;
@@ -77,6 +81,7 @@ public sealed class QQPlatformAdapter : IBotAdapter
         if (_gateway is not null) await _gateway.StopAsync().ConfigureAwait(false);
         _gateway = null;
         _messages = null;
+        _officialMessages = null;
         _api = null;
         _http?.Dispose();
         _http = null;
@@ -102,15 +107,16 @@ public sealed class QQPlatformAdapter : IBotAdapter
         try
         {
             var translated = QQEventTranslator.Translate(payload, _selfId);
-            if (translated is QQInteractionEvent interaction)
+            if (translated is PlatformEvent
+                { Kind: QEventKinds.OfficialButtonInteraction, Raw: QOfficialButtonInteraction interaction } platformEvent)
             {
                 try { await _api!.AcknowledgeInteractionAsync(interaction.InteractionId).ConfigureAwait(false); }
                 catch (Exception ex) { Logger.Warning($"QQ interaction acknowledgement failed: {ex.Message}"); }
-                if (interaction.Channel.Type == ChannelType.Group)
+                if (platformEvent.Channel?.Type == ChannelType.Group)
                 {
-                    var groupName = await GetGroupNameAsync(interaction.Channel.Id).ConfigureAwait(false);
+                    var groupName = await GetGroupNameAsync(platformEvent.Channel.Id).ConfigureAwait(false);
                     if (!string.IsNullOrWhiteSpace(groupName))
-                        translated = interaction with { Channel = interaction.Channel with { Name = groupName } };
+                        translated = platformEvent with { Channel = platformEvent.Channel with { Name = groupName } };
                 }
             }
             if (translated is MessageEvent { IsDirect: false } groupMessage)

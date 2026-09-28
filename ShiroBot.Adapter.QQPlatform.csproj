@@ -9,12 +9,14 @@
     <ShiroBotPluginPackagingEnabled>true</ShiroBotPluginPackagingEnabled>
     <ShiroBotPluginSharedAssemblies>ShiroBot.QQPlatform.Contracts;ShiroBot.Model.QQ;ShiroBot.Model.Discord;ShiroBot.Model.Telegram</ShiroBotPluginSharedAssemblies>
   </PropertyGroup>
+  <Import Project="$(ShiroBotSourceRoot)/SDK/buildTransitive/ShiroBot.SDK.props" />
   <ItemGroup>
     <Compile Remove="Contracts/**/*.cs" />
     <Compile Remove="tests/**/*.cs" />
     <Compile Remove="samples/**/*.cs" />
     <ProjectReference Include="Contracts/ShiroBot.QQPlatform.Contracts.csproj" />
-    <PackageReference Include="ShiroBot.SDK" Version="0.9.1" />
+    <ProjectReference Include="$(ShiroBotSourceRoot)/SDK/ShiroBot.SDK.csproj" Private="false" />
+    <ProjectReference Include="$(ShiroBotSourceRoot)/Models/QQ/ShiroBot.Model.QQ.csproj" Private="false" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="ShiroBot.QQPlatform.Tests" />
@@ -29,4 +31,5 @@
     <Copy SourceFiles="$(MSBuildProjectDirectory)/Contracts/bin/$(Configuration)/$(TargetFramework)/ShiroBot.QQPlatform.Contracts.dll"
           DestinationFolder="$(PublishDir)" />
   </Target>
+  <Import Project="$(ShiroBotSourceRoot)/SDK/buildTransitive/ShiroBot.SDK.targets" />
 </Project>
