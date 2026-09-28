@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ShiroBotPluginPackagingEnabled>true</ShiroBotPluginPackagingEnabled>
+    <ShiroBotPluginSharedAssemblies>ShiroBot.QQPlatform.Contracts</ShiroBotPluginSharedAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="ShiroBot.SDK" Version="0.9.1" />
+    <ProjectReference Include="..\..\Contracts\ShiroBot.QQPlatform.Contracts.csproj" />
+  </ItemGroup>
+</Project>

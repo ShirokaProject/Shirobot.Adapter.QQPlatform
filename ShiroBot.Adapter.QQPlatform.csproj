@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <AssemblyName>ShiroBot.Adapter.QQPlatform</AssemblyName>
+    <RootNamespace>ShiroBot.Adapter.QQPlatform</RootNamespace>
+    <ShiroBotPluginPackagingEnabled>true</ShiroBotPluginPackagingEnabled>
+    <ShiroBotPluginSharedAssemblies>ShiroBot.QQPlatform.Contracts;ShiroBot.Model.QQ;ShiroBot.Model.Discord;ShiroBot.Model.Telegram</ShiroBotPluginSharedAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="Contracts/**/*.cs" />
+    <Compile Remove="tests/**/*.cs" />
+    <Compile Remove="samples/**/*.cs" />
+    <ProjectReference Include="Contracts/ShiroBot.QQPlatform.Contracts.csproj" />
+    <PackageReference Include="ShiroBot.SDK" Version="0.9.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="ShiroBot.QQPlatform.Tests" />
+  </ItemGroup>
+  <Target Name="RestoreQQPlatformContractToOutput" AfterTargets="RemoveShiroBotPluginDependencyFile"
+          Condition="'$(ShiroBotPluginPackagingEnabled)' == 'true'">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/Contracts/bin/$(Configuration)/$(TargetFramework)/ShiroBot.QQPlatform.Contracts.dll"
+          DestinationFolder="$(TargetDir)" />
+  </Target>
+  <Target Name="RestoreQQPlatformContractToPublish" AfterTargets="RemovePublishedShiroBotPluginDependencyFile"
+          Condition="'$(ShiroBotPluginPackagingEnabled)' == 'true'">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/Contracts/bin/$(Configuration)/$(TargetFramework)/ShiroBot.QQPlatform.Contracts.dll"
+          DestinationFolder="$(PublishDir)" />
+  </Target>
+</Project>
