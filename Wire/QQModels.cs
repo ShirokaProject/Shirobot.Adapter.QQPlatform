@@ -76,6 +76,9 @@ internal sealed record QQInteractionData
     [JsonPropertyName("group_openid")] public string? GroupOpenId { get; init; }
     [JsonPropertyName("group_member_openid")] public string? GroupMemberOpenId { get; init; }
     [JsonPropertyName("user_openid")] public string? UserOpenId { get; init; }
+    [JsonPropertyName("user_id")] public string? UserId { get; init; }
+    [JsonPropertyName("channel_id")] public string? ChannelId { get; init; }
+    [JsonPropertyName("guild_id")] public string? GuildId { get; init; }
     [JsonPropertyName("data")] public QQInteractionPayload? Data { get; init; }
 }
 
@@ -123,12 +126,24 @@ internal sealed record QQStreamRequest
 }
 
 internal sealed record QQMedia([property: JsonPropertyName("file_info")] string FileInfo);
-internal sealed record QQMarkdown([property: JsonPropertyName("content")] string Content);
-internal sealed record QQKeyboardWire([property: JsonPropertyName("content")] QQKeyboardContent Content);
+internal sealed record QQMarkdown
+{
+    [JsonPropertyName("content"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Content { get; init; }
+    [JsonPropertyName("custom_template_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? CustomTemplateId { get; init; }
+    [JsonPropertyName("params"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public IReadOnlyList<QQMarkdownParamWire>? Params { get; init; }
+}
+internal sealed record QQMarkdownParamWire(
+    [property: JsonPropertyName("key")] string Key,
+    [property: JsonPropertyName("values")] IReadOnlyList<string> Values);
+internal sealed record QQKeyboardWire
+{
+    [JsonPropertyName("id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Id { get; init; }
+    [JsonPropertyName("content"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQKeyboardContent? Content { get; init; }
+}
 internal sealed record QQKeyboardContent([property: JsonPropertyName("rows")] IReadOnlyList<QQKeyboardRowWire> Rows);
 internal sealed record QQKeyboardRowWire([property: JsonPropertyName("buttons")] IReadOnlyList<QQButtonWire> Buttons);
 internal sealed record QQButtonWire(
-    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Id,
     [property: JsonPropertyName("render_data")] QQButtonRenderData RenderData,
     [property: JsonPropertyName("action")] QQButtonAction Action);
 internal sealed record QQButtonRenderData(
@@ -143,11 +158,13 @@ internal sealed record QQButtonAction
     [JsonPropertyName("unsupport_tips")] public string UnsupportedTips { get; init; } = "当前客户端不支持该操作";
     [JsonPropertyName("enter"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? Enter { get; init; }
     [JsonPropertyName("reply"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? Reply { get; init; }
+    [JsonPropertyName("anchor"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public int? Anchor { get; init; }
 }
 internal sealed record QQButtonPermission
 {
     [JsonPropertyName("type")] public int Type { get; init; }
     [JsonPropertyName("specify_user_ids"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public IReadOnlyList<string>? SpecificUserIds { get; init; }
+    [JsonPropertyName("specify_role_ids"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public IReadOnlyList<string>? SpecificRoleIds { get; init; }
 }
 internal sealed record QQArk(
     [property: JsonPropertyName("template_id")] int TemplateId,

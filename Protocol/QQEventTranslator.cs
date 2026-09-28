@@ -1,6 +1,6 @@
 using System.Text.Json;
 using ShiroBot.Adapter.QQPlatform.Wire;
-using ShiroBot.QQPlatform.Contracts;
+using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Models;
 
 namespace ShiroBot.Adapter.QQPlatform.Protocol;
@@ -19,17 +19,33 @@ internal static class QQEventTranslator
             if (interaction is not { Type: 11, Id: { Length: > 0 }, Data.Resolved.ButtonData: { Length: > 0 } })
                 return null;
             var isGroup = interaction.ChatType == 1 || interaction.Scene == "group";
-            var channelId = isGroup ? interaction.GroupOpenId : interaction.UserOpenId;
-            var userId = isGroup ? interaction.GroupMemberOpenId : interaction.UserOpenId;
+            var isChannel = !isGroup && !string.IsNullOrWhiteSpace(interaction.ChannelId);
+            var channelId = isGroup ? interaction.GroupOpenId
+                : isChannel ? interaction.ChannelId : interaction.UserOpenId;
+            var userId = isGroup ? interaction.GroupMemberOpenId
+                : isChannel ? interaction.UserId : interaction.UserOpenId;
             if (string.IsNullOrWhiteSpace(channelId) || string.IsNullOrWhiteSpace(userId)) return null;
-            return new QQInteractionEvent
+            var target = new QOfficialMessageTarget(
+                isGroup ? QOfficialMessageScene.Group
+                : isChannel ? QOfficialMessageScene.Channel : QOfficialMessageScene.Direct,
+                channelId);
+            return new PlatformEvent
             {
-                Platform = Platform, SelfId = selfId, Raw = raw,
-                InteractionId = interaction.Id, EventId = payload.Id ?? interaction.Id,
-                Channel = isGroup ? Channel.Group(channelId) : Channel.Direct(channelId),
-                UserId = userId, ButtonData = interaction.Data.Resolved.ButtonData,
-                ButtonId = interaction.Data.Resolved.ButtonId,
-                MessageId = interaction.Data.Resolved.MessageId
+                Platform = Platform, SelfId = selfId, Kind = QEventKinds.OfficialButtonInteraction,
+                Channel = isGroup ? Channel.Group(channelId)
+                    : isChannel ? new Channel(channelId, ChannelType.Other) : Channel.Direct(channelId),
+                Raw = new QOfficialButtonInteraction
+                {
+                    Time = DateTimeOffset.UtcNow,
+                    SelfId = long.TryParse(selfId, out var numericSelfId) ? numericSelfId : 0,
+                    InteractionId = interaction.Id,
+                    ButtonData = interaction.Data.Resolved.ButtonData,
+                    ButtonId = interaction.Data.Resolved.ButtonId,
+                    MessageId = interaction.Data.Resolved.MessageId,
+                    Target = target,
+                    UserId = userId,
+                    GuildId = interaction.GuildId
+                }
             };
         }
         if (type is "GROUP_AT_MESSAGE_CREATE" or "GROUP_MESSAGE_CREATE" or "C2C_MESSAGE_CREATE")

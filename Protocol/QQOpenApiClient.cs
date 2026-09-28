@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using ShiroBot.Adapter.QQPlatform.Wire;
+using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Models;
 
 namespace ShiroBot.Adapter.QQPlatform.Protocol;
@@ -8,6 +9,9 @@ namespace ShiroBot.Adapter.QQPlatform.Protocol;
 internal sealed class QQOpenApiClient(HttpClient http, QQPlatformConfig config, QQTokenProvider tokens)
 {
     private readonly QQApiTransport _transport = new(http, config, tokens);
+    private readonly Dictionary<string, long> _acknowledged = [];
+    private readonly Queue<(string Id, long Serial)> _acknowledgementOrder = new();
+    private long _acknowledgementSerial;
 
     public async Task<Uri> GetGatewayAsync(CancellationToken cancellationToken)
     {
@@ -67,10 +71,40 @@ internal sealed class QQOpenApiClient(HttpClient http, QQPlatformConfig config, 
         return info.GroupName;
     }
 
-    public async Task AcknowledgeInteractionAsync(string interactionId, CancellationToken cancellationToken = default)
+    public async Task AcknowledgeInteractionAsync(string interactionId,
+        QOfficialInteractionResponseCode code = QOfficialInteractionResponseCode.Success,
+        CancellationToken cancellationToken = default)
     {
-        using var response = await _transport.SendAsync(HttpMethod.Put, QQApiRoutes.Interaction(interactionId),
-            new { code = 0 }, cancellationToken).ConfigureAwait(false);
+        ArgumentException.ThrowIfNullOrWhiteSpace(interactionId);
+        if (!Enum.IsDefined(code)) throw new ArgumentOutOfRangeException(nameof(code));
+        long serial;
+        lock (_acknowledged)
+        {
+            if (_acknowledged.ContainsKey(interactionId)) return;
+            serial = ++_acknowledgementSerial;
+            _acknowledged.Add(interactionId, serial);
+            _acknowledgementOrder.Enqueue((interactionId, serial));
+            while (_acknowledgementOrder.Count > 4096)
+            {
+                var old = _acknowledgementOrder.Dequeue();
+                if (_acknowledged.TryGetValue(old.Id, out var current) && current == old.Serial)
+                    _acknowledged.Remove(old.Id);
+            }
+        }
+        try
+        {
+            using var response = await _transport.SendAsync(HttpMethod.Put, QQApiRoutes.Interaction(interactionId),
+                new { code = (int)code }, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            lock (_acknowledged)
+            {
+                if (_acknowledged.TryGetValue(interactionId, out var current) && current == serial)
+                    _acknowledged.Remove(interactionId);
+            }
+            throw;
+        }
     }
 
 

@@ -1,4 +1,5 @@
 using ShiroBot.QQPlatform.Contracts;
+using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Abstractions;
 using ShiroBot.SDK.Config;
 using ShiroBot.SDK.Core;
@@ -6,17 +7,18 @@ using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
 
 [assembly: ShiroBotApiCompatibility("0.9", "0.9")]
+[assembly: RequiresShiroBotPackage("shirobot.model.qq", MinimumVersion = "0.9.2")]
 
 namespace ShiroBot.Plugin.QQPlatformRichDemo;
 
 [BotPlugin("qqplatform.rich-demo", Name = "QQPlatform Rich Demo", Version = "1.0.0",
-    Description = "QQ 官方机器人富消息能力示例", SharedAssemblies = "ShiroBot.QQPlatform.Contracts")]
+    Description = "QQ 官方机器人富消息能力示例", SharedAssemblies = "ShiroBot.QQPlatform.Contracts;ShiroBot.Model.QQ")]
 public sealed class RichDemoPlugin : PluginBase
 {
     private const string Article = """
         # ShiroBot 富消息演示
 
-        这是通过 QQPlatform 扩展接口发送的 Markdown 消息。
+        这是通过上游 IQOfficialMessageApi 发送的 Markdown 消息。
 
         ## 可测试的能力
 
@@ -34,22 +36,22 @@ public sealed class RichDemoPlugin : PluginBase
     {
         Map("imagetest", SendImageAsync);
         Map("mdtest", message => SendPageAsync(message.Channel, message.Sender.Id,
-            QQResponseReference.ForMessage(message.MessageId), "article"));
+            new QOfficialMessageReply { MessageId = message.MessageId }, "article"));
         Map("recalltest", SendAndRecallAsync);
         Map("typingtest", SendTypingDemoAsync);
         Map("streamtest", SendStreamDemoAsync);
         Map("actiontest", message => SendPageAsync(message.Channel, message.Sender.Id,
-            QQResponseReference.ForMessage(message.MessageId), "main"));
+            new QOfficialMessageReply { MessageId = message.MessageId }, "main"));
         Map("action/features", message => SendPageAsync(message.Channel, message.Sender.Id,
-            QQResponseReference.ForMessage(message.MessageId), "features"));
+            new QOfficialMessageReply { MessageId = message.MessageId }, "features"));
         Map("action/tools", message => SendPageAsync(message.Channel, message.Sender.Id,
-            QQResponseReference.ForMessage(message.MessageId), "tools"));
+            new QOfficialMessageReply { MessageId = message.MessageId }, "tools"));
         Map("action/status", message => SendPageAsync(message.Channel, message.Sender.Id,
-            QQResponseReference.ForMessage(message.MessageId), "status"));
+            new QOfficialMessageReply { MessageId = message.MessageId }, "status"));
         Map("action/help", message => SendPageAsync(message.Channel, message.Sender.Id,
-            QQResponseReference.ForMessage(message.MessageId), "help"));
+            new QOfficialMessageReply { MessageId = message.MessageId }, "help"));
         Map("rich", message => ReplyAsync(message, HelpMenu));
-        Events.Map<QQInteractionEvent>(HandleInteractionAsync);
+        Events.MapPlatform(QEventKinds.OfficialButtonInteraction, HandleInteractionAsync);
     }
 
     protected override Task LoadAsync()
@@ -94,75 +96,103 @@ public sealed class RichDemoPlugin : PluginBase
             .ConfigureAwait(false);
     }
 
-    private Task HandleInteractionAsync(QQInteractionEvent interaction)
+    private Task HandleInteractionAsync(PlatformEvent evt)
     {
+        if (evt.Raw is not QOfficialButtonInteraction interaction || evt.Channel is null)
+            return Task.CompletedTask;
         if (!interaction.ButtonData.StartsWith("rich:", StringComparison.Ordinal)) return Task.CompletedTask;
         var page = interaction.ButtonData["rich:".Length..];
         if (page is not ("main" or "features" or "tools" or "status" or "help" or "article"))
             return Task.CompletedTask;
-        return SendPageAsync(interaction.Channel, interaction.UserId,
-            QQResponseReference.ForEvent(interaction.EventId), page);
+        return SendPageAsync(evt.Channel, interaction.UserId, null, page);
     }
 
-    private async Task SendPageAsync(Channel channel, string userId, QQResponseReference response, string page)
+    private async Task SendPageAsync(Channel channel, string userId, QOfficialMessageReply? reply, string page)
     {
         var (content, keyboard) = CreatePage(channel, userId, page);
-        var qq = Context.GetAdapterExtension<IQQPlatformMessageService>();
-        if (qq is null)
+        var target = channel.Type switch
         {
-            if (response.MessageId is not null)
-                await Context.Message.SendMessageAsync(channel, content).ConfigureAwait(false);
+            ChannelType.Group => new QOfficialMessageTarget(QOfficialMessageScene.Group, channel.Id),
+            ChannelType.Direct => new QOfficialMessageTarget(QOfficialMessageScene.Direct, channel.Id),
+            _ => null
+        };
+        var official = Context.GetAdapterExtension<IQOfficialMessageApi>();
+        var markdown = new QCustomMarkdown(content);
+        if (target is null || official?.CanSendMarkdown(target, markdown, keyboard) != true)
+        {
+            if (reply?.MessageId is not null)
+                await Context.Message.SendMessageAsync(channel, PlainTextPage(page, content)).ConfigureAwait(false);
             return;
         }
 
         try
         {
-            await qq.SendRichMarkdownAsync(channel, new QQMarkdownMessage(content, keyboard), response)
+            await official.SendMarkdownAsync(target, markdown, keyboard, reply)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             BotLog.Warning($"RichDemo 富消息发送失败，改用普通文本：{ex.Message}");
-            await qq.SendTextAsync(channel, PlainTextPage(page, content), response).ConfigureAwait(false);
+            if (reply?.MessageId is not null)
+                await Context.Message.SendMessageAsync(channel, PlainTextPage(page, content)).ConfigureAwait(false);
         }
     }
 
-    private static (string Content, QQKeyboard Keyboard) CreatePage(Channel channel, string userId, string page) => page switch
+    private static (string Content, QInlineKeyboard Keyboard) CreatePage(Channel channel, string userId, string page) => page switch
     {
         "main" => ("# ShiroBot 交互控制中心\n\n选择下面的功能或工具。",
             Keyboard([Callback("features", "功能中心", "features"), Callback("tools", "工具菜单", "tools")],
                 [Callback("article", "阅读文章", "article"), Link("docs", ".NET 文档", "https://learn.microsoft.com/dotnet/")])),
         "features" => ("## 功能中心\n\n查看运行状态与使用指南。",
-            Keyboard([new QQButton("status", "运行状态", QQButtonActionType.Callback, "rich:status",
-                    Permission: QQButtonPermissionType.SpecificUsers, SpecificUserIds: [userId]),
+            Keyboard([Callback("status", "运行状态", "status", users: [userId]),
                     Callback("help", "使用指南", "help")],
-                [Callback("back-main", "返回首页", "main", QQButtonStyle.Secondary)])),
+                [Callback("back-main", "返回首页", "main", QKeyboardButtonStyle.Gray)])),
         "tools" => ("## 工具菜单\n\nMarkdown、图片和撤回演示。",
             Keyboard([Callback("article", "Markdown", "article"), Command("images", "图片测试", "#imagetest")],
-                [Command("recall", "撤回测试", "#recalltest"), Callback("back-main", "返回首页", "main", QQButtonStyle.Secondary)])),
+                [Command("recall", "撤回测试", "#recalltest"), Callback("back-main", "返回首页", "main", QKeyboardButtonStyle.Gray)])),
         "status" => ($"## 运行状态\n\n平台：{channel.Type}\n会话：{channel.Name ?? channel.Id}\n交互回调：可用",
-            Keyboard([Callback("back-features", "返回功能", "features", QQButtonStyle.Secondary),
-                Callback("back-main", "返回首页", "main", QQButtonStyle.Secondary)])),
+            Keyboard([Callback("back-features", "返回功能", "features", QKeyboardButtonStyle.Gray),
+                Callback("back-main", "返回首页", "main", QKeyboardButtonStyle.Gray)])),
         "help" => ("## 使用指南\n\n点击按钮进入下一页，也可以发送 `#actiontest`、`#mdtest`、`#imagetest`、`#recalltest`。",
-            Keyboard([Callback("back-features", "返回功能", "features", QQButtonStyle.Secondary),
-                Callback("back-main", "返回首页", "main", QQButtonStyle.Secondary)])),
+            Keyboard([Callback("back-features", "返回功能", "features", QKeyboardButtonStyle.Gray),
+                Callback("back-main", "返回首页", "main", QKeyboardButtonStyle.Gray)])),
         "article" => (Article,
-            Keyboard([Callback("back-main", "返回首页", "main", QQButtonStyle.Secondary),
+            Keyboard([Callback("back-main", "返回首页", "main", QKeyboardButtonStyle.Gray),
                 Link("docs", ".NET 文档", "https://learn.microsoft.com/dotnet/")])),
         _ => throw new ArgumentOutOfRangeException(nameof(page))
     };
 
-    private static QQKeyboard Keyboard(params QQButton[][] rows) =>
-        new(rows.Select(row => new QQKeyboardRow(row)).ToArray());
+    private static QInlineKeyboard Keyboard(params QKeyboardButton[][] rows) =>
+        new(rows.Select(row => new QKeyboardRow(row)).ToArray());
 
-    private static QQButton Callback(string id, string label, string page, QQButtonStyle style = QQButtonStyle.Primary) =>
-        new(id, label, QQButtonActionType.Callback, $"rich:{page}", style);
+    private static QKeyboardButton Callback(string id, string label, string page,
+        QKeyboardButtonStyle style = QKeyboardButtonStyle.Blue, IReadOnlyList<string>? users = null) =>
+        Button(id, label, QKeyboardActionType.Callback, $"rich:{page}", style, users);
 
-    private static QQButton Command(string id, string label, string command) =>
-        new(id, label, QQButtonActionType.SendCommand, command, Enter: true);
+    private static QKeyboardButton Command(string id, string label, string command) =>
+        Button(id, label, QKeyboardActionType.Command, command, QKeyboardButtonStyle.Blue, enter: true);
 
-    private static QQButton Link(string id, string label, string url) =>
-        new(id, label, QQButtonActionType.OpenUrl, url, QQButtonStyle.Secondary);
+    private static QKeyboardButton Link(string id, string label, string url) =>
+        Button(id, label, QKeyboardActionType.Jump, url, QKeyboardButtonStyle.Gray);
+
+    private static QKeyboardButton Button(string id, string label, QKeyboardActionType type, string data,
+        QKeyboardButtonStyle style, IReadOnlyList<string>? users = null, bool? enter = null) => new()
+    {
+        Id = id,
+        RenderData = new QKeyboardRenderData(label, label, style),
+        Action = new QKeyboardAction
+        {
+            Type = type,
+            Data = data,
+            Permission = new QKeyboardPermission
+            {
+                Type = users is null ? QKeyboardPermissionType.Everyone : QKeyboardPermissionType.SpecifiedUsers,
+                SpecifyUserIds = users
+            },
+            UnsupportTips = "请更新 QQ 客户端",
+            Enter = enter
+        }
+    };
 
     private static string PlainTextPage(string page, string content) => page switch
     {

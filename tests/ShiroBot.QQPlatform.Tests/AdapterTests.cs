@@ -5,6 +5,7 @@ using ShiroBot.Adapter.QQPlatform.AdapterImpl;
 using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
 using ShiroBot.QQPlatform.Contracts;
+using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
 using Xunit;
@@ -96,18 +97,21 @@ public sealed class AdapterTests
     }
 
     [Fact]
-    public async Task RichMarkdownSerializesKeyboardAndEventReply()
+    public async Task OfficialMarkdownSerializesKeyboardAndEventReply()
     {
         var handler = new FakeHandler();
         using var http = new HttpClient(handler);
         var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
-        var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
-        var keyboard = new QQKeyboard([new QQKeyboardRow([
-            new QQButton("next", "下一页", QQButtonActionType.Callback, "rich:next"),
-            new QQButton("docs", "文档", QQButtonActionType.OpenUrl, "https://example.org", QQButtonStyle.Secondary)
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        var official = new QQOfficialMessageService(api, new QQMessageService(api));
+        var target = new QOfficialMessageTarget(QOfficialMessageScene.Group, "group-1");
+        var keyboard = new QInlineKeyboard([new QKeyboardRow([
+            OfficialButton("next", "下一页", QKeyboardActionType.Callback, "rich:next"),
+            OfficialButton("docs", "文档", QKeyboardActionType.Jump, "https://example.org")
         ])]);
-        await messages.SendRichMarkdownAsync(Channel.Group("group-1"),
-            new QQMarkdownMessage("# 标题", keyboard), QQResponseReference.ForEvent("event-1"));
+        Assert.True(official.CanSendMarkdown(target, new QCustomMarkdown("# 标题"), keyboard));
+        Assert.Equal("outgoing-1", await official.SendMarkdownAsync(target, new QCustomMarkdown("# 标题"),
+            keyboard, new QOfficialMessageReply { EventId = "event-1" }));
         using var json = JsonDocument.Parse(handler.Requests[^1].Body);
         var root = json.RootElement;
         Assert.Equal(2, root.GetProperty("msg_type").GetInt32());
@@ -117,6 +121,30 @@ public sealed class AdapterTests
         var buttons = root.GetProperty("keyboard").GetProperty("content").GetProperty("rows")[0].GetProperty("buttons");
         Assert.Equal(1, buttons[0].GetProperty("action").GetProperty("type").GetInt32());
         Assert.Equal(0, buttons[1].GetProperty("action").GetProperty("type").GetInt32());
+    }
+
+    [Fact]
+    public async Task OfficialTemplateMarkdownAndKeyboardCanSendWithoutReply()
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        var official = new QQOfficialMessageService(api, new QQMessageService(api));
+        var target = new QOfficialMessageTarget(QOfficialMessageScene.Direct, "user-1");
+        var markdown = new QTemplateMarkdown("template-1", [new QMarkdownParameter("name", ["Alice"])]);
+        Assert.True(official.CanSendMarkdown(target, markdown, new QKeyboardTemplate("keyboard-1")));
+        Assert.False(official.CanSendMarkdown(
+            new QOfficialMessageTarget(QOfficialMessageScene.Channel, "channel-1"), markdown));
+        await official.SendMarkdownAsync(target, markdown, new QKeyboardTemplate("keyboard-1"),
+            new QOfficialMessageReply());
+        var root = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+        Assert.Equal("template-1", root.GetProperty("markdown").GetProperty("custom_template_id").GetString());
+        Assert.Equal("Alice", root.GetProperty("markdown").GetProperty("params")[0]
+            .GetProperty("values")[0].GetString());
+        Assert.Equal("keyboard-1", root.GetProperty("keyboard").GetProperty("id").GetString());
+        Assert.False(root.TryGetProperty("msg_id", out _));
+        Assert.False(root.TryGetProperty("event_id", out _));
     }
 
     [Fact]
@@ -172,20 +200,25 @@ public sealed class AdapterTests
     public async Task InteractionIsTranslatedAndAcknowledged()
     {
         var data = JsonDocument.Parse("""{"id":"interaction-1","type":11,"scene":"group","chat_type":1,"group_openid":"group-1","group_member_openid":"member-1","data":{"resolved":{"button_data":"rich:main","button_id":"home"}}}""").RootElement;
-        var interaction = Assert.IsType<QQInteractionEvent>(QQEventTranslator.Translate(
+        var platformEvent = Assert.IsType<PlatformEvent>(QQEventTranslator.Translate(
             new GatewayPayload(0, data, 10, "INTERACTION_CREATE", "event-1"), "bot-1"));
-        Assert.Equal("group-1", interaction.Channel.Id);
+        Assert.Equal(QEventKinds.OfficialButtonInteraction, platformEvent.Kind);
+        var interaction = Assert.IsType<QOfficialButtonInteraction>(platformEvent.Raw);
+        Assert.Equal("group-1", interaction.Target.Id);
+        Assert.Equal(QOfficialMessageScene.Group, interaction.Target.Scene);
         Assert.Equal("member-1", interaction.UserId);
         Assert.Equal("rich:main", interaction.ButtonData);
-        Assert.Equal("event-1", interaction.EventId);
+        Assert.Equal("group-1", platformEvent.Channel?.Id);
 
         var handler = new FakeHandler();
         using var http = new HttpClient(handler);
         var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
         var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
         await api.AcknowledgeInteractionAsync(interaction.InteractionId);
+        await api.AcknowledgeInteractionAsync(interaction.InteractionId);
         Assert.EndsWith("/interactions/interaction-1", handler.Requests[^1].Uri);
         Assert.Equal(0, JsonDocument.Parse(handler.Requests[^1].Body).RootElement.GetProperty("code").GetInt32());
+        Assert.Equal(2, handler.Requests.Count);
     }
 
     [Fact]
@@ -266,6 +299,19 @@ public sealed class AdapterTests
         Assert.Equal("https://api.bot.qq.com/app/getAppAccessToken", config.TokenEndpoint);
         Assert.False(config.NormalizeLegacyTokenEndpoint());
     }
+
+    private static QKeyboardButton OfficialButton(string id, string label, QKeyboardActionType type, string data) => new()
+    {
+        Id = id,
+        RenderData = new QKeyboardRenderData(label, label, QKeyboardButtonStyle.Blue),
+        Action = new QKeyboardAction
+        {
+            Type = type,
+            Permission = new QKeyboardPermission { Type = QKeyboardPermissionType.Everyone },
+            Data = data,
+            UnsupportTips = "请更新 QQ 客户端"
+        }
+    };
 
     private sealed class FakeHandler : HttpMessageHandler
     {

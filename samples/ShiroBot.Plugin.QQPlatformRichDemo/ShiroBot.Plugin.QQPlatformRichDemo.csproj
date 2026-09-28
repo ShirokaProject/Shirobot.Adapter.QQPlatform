@@ -6,8 +6,11 @@
     <ShiroBotPluginPackagingEnabled>true</ShiroBotPluginPackagingEnabled>
     <ShiroBotPluginSharedAssemblies>ShiroBot.QQPlatform.Contracts</ShiroBotPluginSharedAssemblies>
   </PropertyGroup>
+  <Import Project="$(ShiroBotSourceRoot)/SDK/buildTransitive/ShiroBot.SDK.props" />
   <ItemGroup>
-    <PackageReference Include="ShiroBot.SDK" Version="0.9.1" />
+    <ProjectReference Include="$(ShiroBotSourceRoot)/SDK/ShiroBot.SDK.csproj" Private="false" />
+    <ProjectReference Include="$(ShiroBotSourceRoot)/Models/QQ/ShiroBot.Model.QQ.csproj" Private="false" />
     <ProjectReference Include="..\..\Contracts\ShiroBot.QQPlatform.Contracts.csproj" />
   </ItemGroup>
+  <Import Project="$(ShiroBotSourceRoot)/SDK/buildTransitive/ShiroBot.SDK.targets" />
 </Project>

@@ -2,6 +2,7 @@ using System.Text;
 using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
 using ShiroBot.QQPlatform.Contracts;
+using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Adapter;
 using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
@@ -72,20 +73,6 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
 
     public Task DeleteMessageAsync(Channel channel, string messageId) => api.DeleteMessageAsync(channel, messageId);
 
-    public Task<SentMessage> SendMarkdownAsync(Channel channel, string markdown, string replyToMessageId)
-    {
-        return SendRichMarkdownAsync(channel, new QQMarkdownMessage(markdown), QQResponseReference.ForMessage(replyToMessageId));
-    }
-
-    public Task<SentMessage> SendTextAsync(Channel channel, string text, QQResponseReference response)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(text);
-        return SendAndLogAsync(channel, WithResponse(new QQSendRequest
-        {
-            MessageType = 0, Content = text
-        }, response), text);
-    }
-
     public async Task SendTypingAsync(Channel channel, string replyToMessageId, TimeSpan duration)
     {
         if (channel.Type != ChannelType.Direct)
@@ -112,29 +99,24 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
             contentType, logger);
     }
 
-    public Task<SentMessage> SendRichMarkdownAsync(Channel channel, QQMarkdownMessage message, QQResponseReference response)
+    internal Task<SentMessage> SendOfficialAsync(Channel channel, QQSendRequest request,
+        QOfficialMessageReply? reply, string description)
     {
-        ArgumentNullException.ThrowIfNull(message);
-        ArgumentException.ThrowIfNullOrWhiteSpace(message.Content);
-        ArgumentNullException.ThrowIfNull(response);
-        var request = new QQSendRequest
+        if (reply is not null)
         {
-            MessageType = 2,
-            Markdown = new QQMarkdown(message.Content),
-            Keyboard = message.Keyboard is null ? null : QQKeyboardMapper.Map(message.Keyboard)
-        };
-        request = WithResponse(request, response);
-        return SendAndLogAsync(channel, request, $"[Markdown] {message.Content}");
-    }
-
-    private QQSendRequest WithResponse(QQSendRequest request, QQResponseReference response)
-    {
-        ArgumentNullException.ThrowIfNull(response);
-        if (string.IsNullOrWhiteSpace(response.MessageId) == string.IsNullOrWhiteSpace(response.EventId))
-            throw new ArgumentException("Exactly one message ID or event ID is required.", nameof(response));
-        return !string.IsNullOrWhiteSpace(response.MessageId)
-            ? WithReply(request, response.MessageId)
-            : request with { EventId = response.EventId };
+            var hasMessage = !string.IsNullOrWhiteSpace(reply.MessageId);
+            var hasEvent = !string.IsNullOrWhiteSpace(reply.EventId);
+            if (hasMessage && hasEvent || reply.MessageSequence is <= 0
+                || !hasMessage && !hasEvent && reply.MessageSequence is not null)
+                throw new ArgumentException("QQ official reply needs one message or event ID and a positive sequence.", nameof(reply));
+            if (hasMessage) request = WithReply(request, reply.MessageId!, reply.MessageSequence);
+            else if (hasEvent) request = request with
+            {
+                EventId = reply.EventId,
+                MessageSequence = reply.MessageSequence
+            };
+        }
+        return SendAndLogAsync(channel, request, description);
     }
 
     public Task<SentMessage> SendArkAsync(Channel channel, int templateId, IReadOnlyDictionary<string, string> fields, string replyToMessageId)
@@ -157,13 +139,16 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         return sent;
     }
 
-    private QQSendRequest WithReply(QQSendRequest request, string replyToMessageId)
+    private QQSendRequest WithReply(QQSendRequest request, string replyToMessageId, int? explicitSequence = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(replyToMessageId);
         lock (_sequences)
         {
-            var sequence = _sequences.TryGetValue(replyToMessageId, out var previous) ? checked(previous + 1) : 1;
-            if (sequence == 1) _sequenceOrder.Enqueue(replyToMessageId);
+            var hasPrevious = _sequences.TryGetValue(replyToMessageId, out var previous);
+            var sequence = explicitSequence ?? (hasPrevious ? checked(previous + 1) : 1);
+            if (hasPrevious && sequence <= previous)
+                throw new ArgumentException("QQ reply sequence must increase for each source message.", nameof(explicitSequence));
+            if (!hasPrevious) _sequenceOrder.Enqueue(replyToMessageId);
             _sequences[replyToMessageId] = sequence;
             while (_sequenceOrder.Count > 4096) _sequences.Remove(_sequenceOrder.Dequeue());
             return request with { MessageId = replyToMessageId, MessageSequence = sequence };
