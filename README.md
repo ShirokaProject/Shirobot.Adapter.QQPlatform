@@ -45,8 +45,10 @@ intents = 33554432
 
 ## 构建和安装
 
+在 Rider 中打开 `ShiroBot.Adapter.QQPlatform.sln`，使适配器、`Contracts`、示例和测试项目一同加载。`QQKeyboard` 等富消息类型定义在 `Contracts` 项目中。
+
 ```powershell
-dotnet test .\tests\ShiroBot.QQPlatform.Tests\ShiroBot.QQPlatform.Tests.csproj
+dotnet test .\ShiroBot.Adapter.QQPlatform.sln
 dotnet publish .\ShiroBot.Adapter.QQPlatform.csproj -c Release -p:CopyAdapterToHost=false -o .\artifacts\publish
 ```
 

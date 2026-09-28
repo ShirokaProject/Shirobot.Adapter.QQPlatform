@@ -13,8 +13,6 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../ShiroBot.Adapter.QQPlatform.csproj">
-      <AdditionalProperties>ShiroBotPluginPackagingEnabled=false</AdditionalProperties>
-    </ProjectReference>
+    <ProjectReference Include="../../ShiroBot.Adapter.QQPlatform.csproj" />
   </ItemGroup>
 </Project>
