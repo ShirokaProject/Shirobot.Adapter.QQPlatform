@@ -1,0 +1,52 @@
+when:
+  - event: tag
+    ref: refs/tags/v*
+
+labels:
+  platform: linux/amd64
+  ci: domain-linux-native
+
+skip_clone: true
+
+steps:
+  - name: build-and-publish
+    image: bash
+    environment:
+      ZOT_USERNAME:
+        from_secret: zot_username
+      ZOT_PASSWORD:
+        from_secret: zot_password
+    commands:
+      - |
+        set -eu
+
+        git init .
+        git remote add origin https://git.oeo.one/justme/Shirobot.Adapter.QQPlatform.git
+        git fetch --depth=1 origin "${CI_COMMIT_REF}"
+        git checkout --detach FETCH_HEAD
+
+        mkdir -p ../Shirobot
+        git -C ../Shirobot init
+        git -C ../Shirobot remote add origin https://git.oeo.one/justme/Shirobot.git
+        git -C ../Shirobot fetch --depth=1 origin master
+        git -C ../Shirobot checkout --detach FETCH_HEAD
+
+        dotnet build ShiroBot.Adapter.QQPlatform.sln -c Release
+        dotnet test tests/ShiroBot.QQPlatform.Tests/ShiroBot.QQPlatform.Tests.csproj -c Release --no-build
+        dotnet publish ShiroBot.Adapter.QQPlatform.csproj -c Release -o artifacts/publish/qq-official
+
+        package_dir="artifacts/release"
+        mkdir -p "$package_dir"
+        cp artifacts/publish/qq-official/ShiroBot.Adapter.QQPlatform.dll "$package_dir/"
+        (cd "$package_dir" && sha256sum ShiroBot.Adapter.QQPlatform.dll > ShiroBot.Adapter.QQPlatform.dll.sha256)
+        tar -C "$package_dir" -czf "$package_dir/ShiroBot.Adapter.QQPlatform-${CI_COMMIT_TAG}.tar.gz" ShiroBot.Adapter.QQPlatform.dll ShiroBot.Adapter.QQPlatform.dll.sha256
+
+        tool_dir="$(mktemp -d)"
+        trap 'rm -rf "$tool_dir"' EXIT
+        curl -fsSL https://github.com/oras-project/oras/releases/download/v1.3.0/oras_1.3.0_linux_amd64.tar.gz -o "$tool_dir/oras.tgz"
+        tar -xzf "$tool_dir/oras.tgz" -C "$tool_dir" oras
+        printf '%s' "$ZOT_PASSWORD" | "$tool_dir/oras" login --registry-config "$tool_dir/auth.json" registry.oeo.one -u "$ZOT_USERNAME" --password-stdin
+        "$tool_dir/oras" push --registry-config "$tool_dir/auth.json" --artifact-type application/vnd.shiro.bot.qqplatform-adapter.v1 \
+          "registry.oeo.one/justme/shirobot-adapter-qqplatform:${CI_COMMIT_TAG}" \
+          "$package_dir/ShiroBot.Adapter.QQPlatform-${CI_COMMIT_TAG}.tar.gz:application/gzip" \
+          "$package_dir/ShiroBot.Adapter.QQPlatform.dll.sha256:text/plain"
