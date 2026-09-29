@@ -39,6 +39,7 @@ public sealed class RichDemoPlugin : PluginBase
         Map("recalltest", SendAndRecallAsync);
         Map("typingtest", SendTypingDemoAsync);
         Map("streamtest", SendStreamDemoAsync);
+        Map("whoami", SendIdentityAsync);
         Map("actiontest", message => SendPageAsync(message.Channel, message.Sender.Id,
             new QOfficialMessageReply { MessageId = message.MessageId }, "main"));
         Map("action/features", message => SendPageAsync(message.Channel, message.Sender.Id,
@@ -83,6 +84,17 @@ public sealed class RichDemoPlugin : PluginBase
 
     private Task ReplyAsync(MessageEvent message, string text) =>
         Context.Message.ReplyAsync(message, text);
+
+    private Task SendIdentityAsync(MessageEvent message)
+    {
+        if (message.Platform != "qq-official") return Task.CompletedTask;
+
+        var scene = message.IsDirect ? "私聊" : "群聊";
+        var identityKind = message.IsDirect ? "user_openid" : "member_openid";
+        var isAdmin = Context.IsAdmin(message.Sender.Id) ? "是" : "否";
+        return ReplyAsync(message,
+            $"{scene} {identityKind}: {message.Sender.Id}\nShiroBot 管理权限: {isAdmin}");
+    }
 
     private Task HandleMentionAsync(MessageEvent message) =>
         Context.Message.QuoteReplyAsync(message,
@@ -312,8 +324,8 @@ public sealed class RichDemoPlugin : PluginBase
 
     private const string MainMenu = "功能中心：#action/features\n工具菜单：#action/tools\n使用指南：#action/help\n文章：#mdtest";
     private const string FeaturesMenu = "功能中心\n运行状态：#action/status\n使用指南：#action/help\n返回首页：#actiontest";
-    private const string ToolsMenu = "工具菜单\nMarkdown：#mdtest\n图片：#imagetest\n撤回：#recalltest\n输入状态：#typingtest\n流式消息：#streamtest\n返回首页：#actiontest";
-    private const string HelpMenu = "RichDemo 命令：#actiontest、#mdtest、#imagetest、#recalltest、#typingtest、#streamtest。支持 / 前缀。Markdown 菜单附带原生按钮；QQ 平台未开放权限时回退为文本命令。";
+    private const string ToolsMenu = "工具菜单\nMarkdown：#mdtest\n图片：#imagetest\n撤回：#recalltest\n输入状态：#typingtest\n流式消息：#streamtest\n身份：#whoami\n返回首页：#actiontest";
+    private const string HelpMenu = "RichDemo 命令：#actiontest、#mdtest、#imagetest、#recalltest、#typingtest、#streamtest、#whoami。支持 / 前缀。Markdown 菜单附带原生按钮；QQ 平台未开放权限时回退为文本命令。";
 }
 
 public sealed class RichDemoConfig

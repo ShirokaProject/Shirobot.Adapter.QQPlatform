@@ -10,10 +10,13 @@
 | `#recalltest` | 回复一条消息，三秒后撤回 |
 | `#typingtest` | 私聊发送 3 秒输入状态，随后回复结果 |
 | `#streamtest` | 私聊逐步更新同一条流式消息 |
+| `#whoami` | 显示当前 QQ 官方 OpenID 及是否命中 ShiroBot 管理员名单 |
 | `#rich` | 显示帮助 |
 | `@机器人` | 群聊中引用原消息并 @ 发送者；已匹配的演示命令优先处理 |
 
 首次加载后，在插件目录的 `config.toml` 中设置 `image_url`，例如 `image_url = "https://example.org/test.png"`。QQPlatform 目前只接受公网 HTTP(S) 图片；本地文件路径不能直接用于这个演示。按钮需要 QQ 平台为机器人开放 Markdown 与自定义 Keyboard 权限；权限不足时插件会显示文本菜单。
+
+`#whoami` 在群聊显示 `member_openid`，私聊显示 `user_openid`。把对应 OpenID 填入宿主的 `owner_list` 或 `admin_list`，不要填数字 QQ 号；群聊与私聊的 ID 应分别取得。
 
 Markdown、Keyboard 和按钮事件使用主仓库 `ShiroBot.Model.QQ` 的模型。示例通过 `IQOfficialMessageApi` 发送官方富消息，监听 `QOfficialButtonInteraction`；输入状态和流式消息通过主仓库的 `IQOfficialDirectMessageApi` 能力接口调用。插件不引用具体适配器程序集。
 
