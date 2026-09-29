@@ -93,15 +93,17 @@ public sealed class AdapterTests
         var handler = new FakeHandler();
         using var http = new HttpClient(handler);
         var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
-        var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
+        var logger = new CapturingLogger();
+        var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)), logger);
         messages.RegisterIncoming(incoming);
-        await messages.SendMessageAsync(incoming.Channel,
+        await messages.SendMessageAsync(incoming.Channel with { Name = "测试群" },
             [new QuoteSegment(incoming.MessageId), new MentionSegment(incoming.Sender.Id) { DisplayName = incoming.Sender.Name },
                 new TextSegment("收到你的 @ 了")]);
         var sent = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
         Assert.Equal("incoming-1", sent.GetProperty("msg_id").GetString());
         Assert.Equal("REFIDX_123==", sent.GetProperty("message_reference").GetProperty("message_id").GetString());
         Assert.Equal("<qqbot-at-user id=\"member-1\" /> 收到你的 @ 了", sent.GetProperty("content").GetString());
+        Assert.Contains("已发送群消息到 测试群: @小明 收到你的 @ 了", logger.Messages);
     }
 
     [Fact]

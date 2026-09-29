@@ -59,21 +59,34 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         var replyToMessageId = quotes.Length == 1 ? quotes[0].MessageId : RecentMessageId(channel);
 
         var content = new StringBuilder();
+        var displayContent = new StringBuilder();
         ResourceSegment? resource = null;
         foreach (var segment in segments)
         {
             switch (segment)
             {
                 case QuoteSegment: break;
-                case TextSegment text: content.Append(text.Text); break;
+                case TextSegment text:
+                    content.Append(text.Text);
+                    displayContent.Append(text.Text);
+                    break;
                 case MentionSegment mention when channel.Type == ChannelType.Group && IsSafeOpenId(mention.UserId):
                     content.Append("<qqbot-at-user id=\"").Append(mention.UserId).Append("\" /> ");
+                    displayContent.Append('@').Append(mention.DisplayName ?? "用户").Append(' ');
                     break;
                 case MentionSegment mention:
                     content.Append('@').Append(mention.DisplayName ?? "用户").Append(' ');
+                    displayContent.Append('@').Append(mention.DisplayName ?? "用户").Append(' ');
                     break;
-                case MentionAllSegment: content.Append("@全体成员 "); break;
-                case EmojiSegment emoji: content.Append(emoji.Name ?? $":{emoji.Id}:"); break;
+                case MentionAllSegment:
+                    content.Append("@全体成员 ");
+                    displayContent.Append("@全体成员 ");
+                    break;
+                case EmojiSegment emoji:
+                    var emojiText = emoji.Name ?? $":{emoji.Id}:";
+                    content.Append(emojiText);
+                    displayContent.Append(emojiText);
+                    break;
                 case ImageSegment image when resource is null: resource = image; break;
                 case ResourceSegment: throw new NotSupportedException("QQ Official supports one remote image per message in this adapter version.");
                 default: throw new NotSupportedException($"QQ Official cannot send segment {segment.GetType().Name}.");
@@ -98,7 +111,7 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         if (quotes.Length == 1 && GetReferenceIndex(channel, quotes[0].MessageId) is { } referenceIndex)
             request = request with { MessageReference = new QQMessageReference(referenceIndex) };
         return await SendAndLogAsync(channel, WithReply(request, replyToMessageId),
-            resource is null ? content.ToString() : "[图片]").ConfigureAwait(false);
+            resource is null ? displayContent.ToString() : "[图片]").ConfigureAwait(false);
     }
 
     public Task DeleteMessageAsync(Channel channel, string messageId) => api.DeleteMessageAsync(channel, messageId);
@@ -163,7 +176,7 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
     private async Task<SentMessage> SendAndLogAsync(Channel channel, QQSendRequest request, string description)
     {
         var sent = await api.SendMessageAsync(channel, request).ConfigureAwait(false);
-        var target = string.IsNullOrWhiteSpace(channel.Name) ? channel.Id : $"{channel.Name}({channel.Id})";
+        var target = string.IsNullOrWhiteSpace(channel.Name) ? channel.Id : channel.Name;
         var kind = channel.Type == ChannelType.Group ? "群消息" : "私聊消息";
         logger?.Info($"已发送{kind}到 {target}: {description.Replace("\r", "\\r").Replace("\n", "\\n")}");
         return sent;
