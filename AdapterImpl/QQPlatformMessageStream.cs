@@ -1,6 +1,6 @@
 using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
-using ShiroBot.QQPlatform.Contracts;
+using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
 
@@ -8,7 +8,8 @@ namespace ShiroBot.Adapter.QQPlatform.AdapterImpl;
 
 internal sealed class QQPlatformMessageStream(
     QQOpenApiClient api, Channel channel, string replyToMessageId, int messageSequence,
-    QQStreamContentType contentType, IConsoleLogger? logger) : IQQPlatformMessageStream
+    QOfficialStreamContentType contentType, IConsoleLogger? logger)
+    : IQOfficialMessageStream
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string? _streamMessageId;
@@ -37,7 +38,7 @@ internal sealed class QQPlatformMessageStream(
         finally { _gate.Release(); }
     }
 
-    public async Task<SentMessage> CompleteAsync(CancellationToken cancellationToken = default)
+    public async Task<string> CompleteAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -47,7 +48,7 @@ internal sealed class QQPlatformMessageStream(
             await SendFrameAsync(_text, 10, cancellationToken).ConfigureAwait(false);
             _completed = true;
             logger?.Info($"已完成私聊流式消息到 {channel.Id}: {_streamMessageId}");
-            return new SentMessage(_streamMessageId!);
+            return _streamMessageId!;
         }
         finally { _gate.Release(); }
     }
@@ -59,7 +60,7 @@ internal sealed class QQPlatformMessageStream(
         var frame = new QQStreamRequest
         {
             InputState = state,
-            ContentType = contentType == QQStreamContentType.Markdown ? "markdown" : "text",
+            ContentType = contentType == QOfficialStreamContentType.Markdown ? "markdown" : "text",
             Content = text,
             MessageId = replyToMessageId,
             EventId = replyToMessageId,

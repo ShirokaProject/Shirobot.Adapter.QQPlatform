@@ -1,7 +1,7 @@
 using System.Text;
+using System.Text.Json;
 using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
-using ShiroBot.QQPlatform.Contracts;
 using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Adapter;
 using ShiroBot.SDK.Models;
@@ -9,12 +9,14 @@ using ShiroBot.SDK.Plugin;
 
 namespace ShiroBot.Adapter.QQPlatform.AdapterImpl;
 
-internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logger = null) : IMessageService, IQQPlatformMessageService
+internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logger = null) : IMessageService
 {
     private readonly Dictionary<string, int> _sequences = [];
     private readonly Queue<string> _sequenceOrder = new();
     private readonly Dictionary<string, (string MessageId, DateTimeOffset SeenAt)> _recent = [];
     private readonly Queue<string> _recentOrder = new();
+    private readonly Dictionary<(ChannelType Type, string ChannelId, string MessageId), string> _referenceIndexes = [];
+    private readonly Queue<(ChannelType Type, string ChannelId, string MessageId)> _referenceOrder = new();
 
     public void RegisterIncoming(MessageEvent message)
     {
@@ -24,6 +26,26 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
             if (!_recent.ContainsKey(key)) _recentOrder.Enqueue(key);
             _recent[key] = (message.MessageId, DateTimeOffset.UtcNow);
             while (_recentOrder.Count > 4096) _recent.Remove(_recentOrder.Dequeue());
+        }
+        if (message.Raw is not JsonElement { ValueKind: JsonValueKind.Object } raw
+            || !raw.TryGetProperty("message_scene", out var scene)
+            || scene.ValueKind != JsonValueKind.Object
+            || !scene.TryGetProperty("ext", out var extensions)
+            || extensions.ValueKind != JsonValueKind.Array) return;
+        foreach (var extension in extensions.EnumerateArray())
+        {
+            if (extension.ValueKind != JsonValueKind.String
+                || extension.GetString() is not { } value
+                || !value.StartsWith("msg_idx=", StringComparison.Ordinal)
+                || value.Length <= "msg_idx=".Length) continue;
+            var referenceKey = (message.Channel.Type, message.Channel.Id, message.MessageId);
+            lock (_referenceIndexes)
+            {
+                if (!_referenceIndexes.ContainsKey(referenceKey)) _referenceOrder.Enqueue(referenceKey);
+                _referenceIndexes[referenceKey] = value["msg_idx=".Length..];
+                while (_referenceOrder.Count > 4096) _referenceIndexes.Remove(_referenceOrder.Dequeue());
+            }
+            break;
         }
     }
 
@@ -36,16 +58,36 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         var replyToMessageId = quotes.Length == 1 ? quotes[0].MessageId : RecentMessageId(channel);
 
         var content = new StringBuilder();
+        var displayContent = new StringBuilder();
+        var hasNativeMention = false;
         ResourceSegment? resource = null;
         foreach (var segment in segments)
         {
             switch (segment)
             {
                 case QuoteSegment: break;
-                case TextSegment text: content.Append(text.Text); break;
-                case MentionSegment mention: content.Append('@').Append(mention.DisplayName ?? mention.UserId).Append(' '); break;
-                case MentionAllSegment: content.Append("@全体成员 "); break;
-                case EmojiSegment emoji: content.Append(emoji.Name ?? $":{emoji.Id}:"); break;
+                case TextSegment text:
+                    content.Append(text.Text);
+                    displayContent.Append(text.Text);
+                    break;
+                case MentionSegment mention when channel.Type == ChannelType.Group && IsSafeOpenId(mention.UserId):
+                    content.Append("<qqbot-at-user id=\"").Append(mention.UserId).Append("\" /> ");
+                    displayContent.Append('@').Append(mention.DisplayName ?? "用户").Append(' ');
+                    hasNativeMention = true;
+                    break;
+                case MentionSegment mention:
+                    content.Append('@').Append(mention.DisplayName ?? "用户").Append(' ');
+                    displayContent.Append('@').Append(mention.DisplayName ?? "用户").Append(' ');
+                    break;
+                case MentionAllSegment:
+                    content.Append("@全体成员 ");
+                    displayContent.Append("@全体成员 ");
+                    break;
+                case EmojiSegment emoji:
+                    var emojiText = emoji.Name ?? $":{emoji.Id}:";
+                    content.Append(emojiText);
+                    displayContent.Append(emojiText);
+                    break;
                 case ImageSegment image when resource is null: resource = image; break;
                 case ResourceSegment: throw new NotSupportedException("QQ Official supports one remote image per message in this adapter version.");
                 default: throw new NotSupportedException($"QQ Official cannot send segment {segment.GetType().Name}.");
@@ -65,10 +107,14 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         else
         {
             if (content.Length == 0) throw new ArgumentException("Message has no sendable content.", nameof(segments));
-            request = new QQSendRequest { MessageType = 0, Content = content.ToString() };
+            request = hasNativeMention
+                ? new QQSendRequest { MessageType = 2, Markdown = new QQMarkdown { Content = content.ToString() } }
+                : new QQSendRequest { MessageType = 0, Content = content.ToString() };
         }
+        if (quotes.Length == 1 && GetReferenceIndex(channel, quotes[0].MessageId) is { } referenceIndex)
+            request = request with { MessageReference = new QQMessageReference(referenceIndex) };
         return await SendAndLogAsync(channel, WithReply(request, replyToMessageId),
-            resource is null ? content.ToString() : "[图片]").ConfigureAwait(false);
+            resource is null ? displayContent.ToString() : "[图片]").ConfigureAwait(false);
     }
 
     public Task DeleteMessageAsync(Channel channel, string messageId) => api.DeleteMessageAsync(channel, messageId);
@@ -88,8 +134,12 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         logger?.Info($"已发送私聊输入状态到 {channel.Id}: {seconds} 秒");
     }
 
-    public IQQPlatformMessageStream BeginStream(Channel channel, string replyToMessageId,
-        QQStreamContentType contentType = QQStreamContentType.Text)
+    internal IQOfficialMessageStream BeginOfficialStream(Channel channel, string replyToMessageId,
+        QOfficialStreamContentType contentType = QOfficialStreamContentType.Text) =>
+        BeginStreamCore(channel, replyToMessageId, contentType);
+
+    private QQPlatformMessageStream BeginStreamCore(Channel channel, string replyToMessageId,
+        QOfficialStreamContentType contentType)
     {
         if (channel.Type != ChannelType.Direct)
             throw new NotSupportedException("QQ Official stream messages support C2C only.");
@@ -119,21 +169,10 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         return SendAndLogAsync(channel, request, description);
     }
 
-    public Task<SentMessage> SendArkAsync(Channel channel, int templateId, IReadOnlyDictionary<string, string> fields, string replyToMessageId)
-    {
-        ArgumentNullException.ThrowIfNull(fields);
-        if (templateId <= 0) throw new ArgumentOutOfRangeException(nameof(templateId));
-        var values = fields.Select(field => new QQArkField(field.Key, field.Value)).ToArray();
-        return SendAndLogAsync(channel, WithReply(new QQSendRequest
-        {
-            MessageType = 3, Ark = new QQArk(templateId, values)
-        }, replyToMessageId), $"[Ark 模板 {templateId}]");
-    }
-
     private async Task<SentMessage> SendAndLogAsync(Channel channel, QQSendRequest request, string description)
     {
         var sent = await api.SendMessageAsync(channel, request).ConfigureAwait(false);
-        var target = string.IsNullOrWhiteSpace(channel.Name) ? channel.Id : $"{channel.Name}({channel.Id})";
+        var target = string.IsNullOrWhiteSpace(channel.Name) ? channel.Id : channel.Name;
         var kind = channel.Type == ChannelType.Group ? "群消息" : "私聊消息";
         logger?.Info($"已发送{kind}到 {target}: {description.Replace("\r", "\\r").Replace("\n", "\\n")}");
         return sent;
@@ -166,4 +205,14 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
     }
 
     private static string ChannelKey(Channel channel) => $"{(int)channel.Type}:{channel.Id}";
+
+    private string? GetReferenceIndex(Channel channel, string messageId)
+    {
+        lock (_referenceIndexes)
+            return _referenceIndexes.GetValueOrDefault((channel.Type, channel.Id, messageId));
+    }
+
+    private static bool IsSafeOpenId(string userId) =>
+        userId is { Length: > 0 and <= 128 } && userId.All(c => c is >= 'A' and <= 'Z'
+            or >= 'a' and <= 'z' or >= '0' and <= '9' or '_' or '-');
 }

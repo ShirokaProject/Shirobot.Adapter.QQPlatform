@@ -101,6 +101,7 @@ internal sealed record QQSendRequest
     [JsonPropertyName("msg_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? MessageId { get; init; }
     [JsonPropertyName("msg_seq"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public int? MessageSequence { get; init; }
     [JsonPropertyName("event_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? EventId { get; init; }
+    [JsonPropertyName("message_reference"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQMessageReference? MessageReference { get; init; }
     [JsonPropertyName("media"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQMedia? Media { get; init; }
     [JsonPropertyName("markdown"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQMarkdown? Markdown { get; init; }
     [JsonPropertyName("keyboard"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQKeyboardWire? Keyboard { get; init; }

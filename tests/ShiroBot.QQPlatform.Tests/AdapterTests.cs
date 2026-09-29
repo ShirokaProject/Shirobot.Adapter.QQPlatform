@@ -4,7 +4,6 @@ using ShiroBot.Adapter.QQPlatform;
 using ShiroBot.Adapter.QQPlatform.AdapterImpl;
 using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
-using ShiroBot.QQPlatform.Contracts;
 using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
@@ -33,9 +32,10 @@ public sealed class AdapterTests
     [Fact]
     public async Task GroupAtContentProducesMentionEmojiAndRoutableCommandText()
     {
-        var data = JsonDocument.Parse("""{"id":"message-2","group_openid":"group-1","author":{"member_openid":"member-1"},"content":"<@!bot-1> #ping<faceType=1,faceId=\"264\",ext=\"eyJ0ZXh0Ijoi5o2C6IS4In0=\">"}""").RootElement;
-        var message = Assert.IsType<MessageEvent>(QQEventTranslator.Translate(new GatewayPayload(0, data, 2, "GROUP_AT_MESSAGE_CREATE", "evt-2"), "bot-1"));
-        Assert.True(message.HasMention("bot-1"));
+        var data = JsonDocument.Parse("""{"id":"message-2","group_openid":"group-1","author":{"member_openid":"member-1"},"content":"<@!12345678901234567890> #ping<faceType=1,faceId=\"264\",ext=\"eyJ0ZXh0Ijoi5o2C6IS4In0=\">"}""").RootElement;
+        var message = Assert.IsType<MessageEvent>(QQEventTranslator.Translate(new GatewayPayload(0, data, 2, "GROUP_AT_MESSAGE_CREATE", "evt-2"), "12345678901234567890", "测试机器人"));
+        Assert.True(message.HasMention("12345678901234567890"));
+        Assert.Equal("测试机器人", Assert.Single(message.Segments.OfType<MentionSegment>()).DisplayName);
         Assert.Equal("#ping", message.GetPlainText().Trim());
         Assert.Equal("捂脸", Assert.Single(message.Segments.OfType<EmojiSegment>()).Name);
         var called = false;
@@ -78,10 +78,36 @@ public sealed class AdapterTests
         Assert.EndsWith("/v2/groups/group-1/messages", handler.Requests[1].Uri);
         Assert.Equal("QQBot token-1", handler.Requests[1].Authorization);
         Assert.Equal("incoming", JsonDocument.Parse(handler.Requests[1].Body).RootElement.GetProperty("msg_id").GetString());
+        Assert.Equal(0, JsonDocument.Parse(handler.Requests[1].Body).RootElement.GetProperty("msg_type").GetInt32());
         Assert.Equal(1, JsonDocument.Parse(handler.Requests[1].Body).RootElement.GetProperty("msg_seq").GetInt32());
         Assert.Equal(2, JsonDocument.Parse(handler.Requests[2].Body).RootElement.GetProperty("msg_seq").GetInt32());
         Assert.Equal(2, logger.Messages.Count);
         Assert.All(logger.Messages, message => Assert.Contains("已发送群消息到 group-1: hello", message));
+    }
+
+    [Fact]
+    public async Task QuoteReplyUsesOfficialReferenceIndexAndNativeGroupMention()
+    {
+        var data = JsonDocument.Parse("""{"id":"incoming-1","group_openid":"group-1","author":{"member_openid":"member-1","username":"小明"},"content":"<@bot-1> 你好","message_scene":{"ext":["msg_idx=REFIDX_123==","auth_token=not-used"]}}""").RootElement;
+        var incoming = Assert.IsType<MessageEvent>(QQEventTranslator.Translate(
+            new GatewayPayload(0, data, 1, "GROUP_AT_MESSAGE_CREATE", "event-1"), "bot-1"));
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var logger = new CapturingLogger();
+        var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)), logger);
+        messages.RegisterIncoming(incoming);
+        await messages.SendMessageAsync(incoming.Channel with { Name = "测试群" },
+            [new QuoteSegment(incoming.MessageId), new MentionSegment(incoming.Sender.Id) { DisplayName = incoming.Sender.Name },
+                new TextSegment("收到你的 @ 了")]);
+        var sent = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+        Assert.Equal("incoming-1", sent.GetProperty("msg_id").GetString());
+        Assert.Equal("REFIDX_123==", sent.GetProperty("message_reference").GetProperty("message_id").GetString());
+        Assert.Equal(2, sent.GetProperty("msg_type").GetInt32());
+        Assert.False(sent.TryGetProperty("content", out _));
+        Assert.Equal("<qqbot-at-user id=\"member-1\" /> 收到你的 @ 了",
+            sent.GetProperty("markdown").GetProperty("content").GetString());
+        Assert.Contains("已发送群消息到 测试群: @小明 收到你的 @ 了", logger.Messages);
     }
 
     [Fact]
@@ -148,13 +174,76 @@ public sealed class AdapterTests
     }
 
     [Fact]
+    public async Task OfficialTextCanReplyToInteractionEvent()
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        IQOfficialMessageApi official = new QQOfficialMessageService(api, new QQMessageService(api));
+
+        var sent = await official.SendTextAsync(
+            new QOfficialMessageTarget(QOfficialMessageScene.Group, "group-1"), "按钮回复",
+            new QOfficialMessageReply { EventId = "gateway-event-1" });
+
+        Assert.Equal("outgoing-1", sent);
+        var root = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+        Assert.Equal(0, root.GetProperty("msg_type").GetInt32());
+        Assert.Equal("gateway-event-1", root.GetProperty("event_id").GetString());
+        Assert.False(root.TryGetProperty("msg_id", out _));
+    }
+
+    [Fact]
+    public async Task OfficialReplyLogsCachedGroupName()
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        var logger = new CapturingLogger();
+        var official = new QQOfficialMessageService(api, new QQMessageService(api, logger), logger,
+            groupId => groupId == "group-1" ? "测试群" : null);
+
+        await official.SendMarkdownAsync(
+            new QOfficialMessageTarget(QOfficialMessageScene.Group, "group-1"),
+            new QCustomMarkdown("# 回复"),
+            reply: new QOfficialMessageReply { EventId = "event-1" });
+
+        Assert.Contains("已发送群消息到 测试群: [Markdown]", logger.Messages);
+    }
+
+    [Fact]
+    public async Task OfficialArkCapabilityUsesSharedContract()
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        IQOfficialMessageApi official = new QQOfficialMessageService(api, new QQMessageService(api));
+
+        var sent = await official.SendArkAsync(
+            new QOfficialMessageTarget(QOfficialMessageScene.Group, "group-1"), 23,
+            new Dictionary<string, string> { ["name"] = "Alice" },
+            new QOfficialMessageReply { MessageId = "incoming" });
+
+        Assert.Equal("outgoing-1", sent);
+        var root = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+        Assert.Equal(3, root.GetProperty("msg_type").GetInt32());
+        Assert.Equal("incoming", root.GetProperty("msg_id").GetString());
+        Assert.Equal(23, root.GetProperty("ark").GetProperty("template_id").GetInt32());
+    }
+
+    [Fact]
     public async Task TypingUsesC2CMessageEndpointAndNotificationPayload()
     {
         var handler = new FakeHandler();
         using var http = new HttpClient(handler);
         var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
-        var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
-        await messages.SendTypingAsync(Channel.Direct("user-1"), "incoming", TimeSpan.FromSeconds(3));
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        IQOfficialDirectMessageApi official = new QQOfficialMessageService(api, new QQMessageService(api));
+        var direct = new QOfficialMessageTarget(QOfficialMessageScene.Direct, "user-1");
+        var reply = new QOfficialMessageReply { MessageId = "incoming" };
+        await official.SendTypingAsync(direct, reply, TimeSpan.FromSeconds(3));
         Assert.EndsWith("/v2/users/user-1/messages", handler.Requests[^1].Uri);
         var root = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
         Assert.Equal(6, root.GetProperty("msg_type").GetInt32());
@@ -163,7 +252,8 @@ public sealed class AdapterTests
         Assert.Equal(1, root.GetProperty("input_notify").GetProperty("input_type").GetInt32());
         Assert.Equal(3, root.GetProperty("input_notify").GetProperty("input_second").GetInt32());
         await Assert.ThrowsAsync<NotSupportedException>(() =>
-            messages.SendTypingAsync(Channel.Group("group-1"), "incoming", TimeSpan.FromSeconds(3)));
+            official.SendTypingAsync(new QOfficialMessageTarget(QOfficialMessageScene.Group, "group-1"),
+                reply, TimeSpan.FromSeconds(3)));
     }
 
     [Fact]
@@ -172,11 +262,15 @@ public sealed class AdapterTests
         var handler = new FakeHandler();
         using var http = new HttpClient(handler);
         var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
-        var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
-        await using var stream = messages.BeginStream(Channel.Direct("user-1"), "incoming", QQStreamContentType.Markdown);
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        IQOfficialDirectMessageApi official = new QQOfficialMessageService(api, new QQMessageService(api));
+        var reply = new QOfficialMessageReply { MessageId = "incoming" };
+        await using var stream = official.BeginStream(
+            new QOfficialMessageTarget(QOfficialMessageScene.Direct, "user-1"),
+            reply, QOfficialStreamContentType.Markdown);
         await stream.AppendAsync("# 标题");
         await stream.AppendAsync("# 标题\n正文");
-        Assert.Equal("outgoing-1", (await stream.CompleteAsync()).MessageId);
+        Assert.Equal("outgoing-1", await stream.CompleteAsync());
         var frames = handler.Requests.Skip(1).Select(r => JsonDocument.Parse(r.Body).RootElement.Clone()).ToArray();
         Assert.Equal(3, frames.Length);
         Assert.All(handler.Requests.Skip(1), request => Assert.EndsWith("/v2/users/user-1/stream_messages", request.Uri));
@@ -193,7 +287,8 @@ public sealed class AdapterTests
         Assert.False(frames[0].TryGetProperty("stream_msg_id", out _));
         Assert.Equal("outgoing-1", frames[1].GetProperty("stream_msg_id").GetString());
         Assert.Equal("# 标题\n正文", frames[2].GetProperty("content_raw").GetString());
-        Assert.Throws<NotSupportedException>(() => messages.BeginStream(Channel.Group("group-1"), "incoming"));
+        Assert.Throws<NotSupportedException>(() => official.BeginStream(
+            new QOfficialMessageTarget(QOfficialMessageScene.Group, "group-1"), reply));
     }
 
     [Fact]
@@ -208,6 +303,7 @@ public sealed class AdapterTests
         Assert.Equal(QOfficialMessageScene.Group, interaction.Target.Scene);
         Assert.Equal("member-1", interaction.UserId);
         Assert.Equal("rich:main", interaction.ButtonData);
+        Assert.Equal("event-1", interaction.EventId);
         Assert.Equal("group-1", platformEvent.Channel?.Id);
 
         var handler = new FakeHandler();

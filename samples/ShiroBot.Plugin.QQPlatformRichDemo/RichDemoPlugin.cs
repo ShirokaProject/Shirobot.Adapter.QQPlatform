@@ -1,4 +1,3 @@
-using ShiroBot.QQPlatform.Contracts;
 using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Abstractions;
 using ShiroBot.SDK.Config;
@@ -12,7 +11,7 @@ using ShiroBot.SDK.Plugin;
 namespace ShiroBot.Plugin.QQPlatformRichDemo;
 
 [BotPlugin("qqplatform.rich-demo", Name = "QQPlatform Rich Demo", Version = "1.0.0",
-    Description = "QQ 官方机器人富消息能力示例", SharedAssemblies = "ShiroBot.QQPlatform.Contracts;ShiroBot.Model.QQ")]
+    Description = "QQ 官方机器人富消息能力示例", SharedAssemblies = "ShiroBot.Model.QQ")]
 public sealed class RichDemoPlugin : PluginBase
 {
     private const string Article = """
@@ -51,6 +50,10 @@ public sealed class RichDemoPlugin : PluginBase
         Map("action/help", message => SendPageAsync(message.Channel, message.Sender.Id,
             new QOfficialMessageReply { MessageId = message.MessageId }, "help"));
         Map("rich", message => ReplyAsync(message, HelpMenu));
+        GroupCommands.MapWhen(message => !message.Sender.IsBot
+                && message.SelfId is { Length: > 0 } selfId
+                && message.HasMention(selfId),
+            HandleMentionAsync);
         Events.MapPlatform(QEventKinds.OfficialButtonInteraction, HandleInteractionAsync);
     }
 
@@ -81,6 +84,14 @@ public sealed class RichDemoPlugin : PluginBase
     private Task ReplyAsync(MessageEvent message, string text) =>
         Context.Message.ReplyAsync(message, text);
 
+    private Task HandleMentionAsync(MessageEvent message) =>
+        Context.Message.QuoteReplyAsync(message,
+            new MentionSegment(message.Sender.Id)
+            {
+                DisplayName = message.Member?.Nick ?? message.Sender.Name
+            },
+            new TextSegment("收到你的 @ 了，这是对原消息的引用回复。"));
+
     private async Task SendImageAsync(MessageEvent message)
     {
         var imageUrl = _config.ImageUrl.Trim();
@@ -104,7 +115,13 @@ public sealed class RichDemoPlugin : PluginBase
         var page = interaction.ButtonData["rich:".Length..];
         if (page is not ("main" or "features" or "tools" or "status" or "help" or "article"))
             return Task.CompletedTask;
-        return SendPageAsync(evt.Channel, interaction.UserId, null, page);
+        if (string.IsNullOrWhiteSpace(interaction.EventId))
+        {
+            BotLog.Warning("RichDemo 按钮事件缺少 Gateway 事件 ID，无法发送被动回复。");
+            return Task.CompletedTask;
+        }
+        return SendPageAsync(evt.Channel, interaction.UserId,
+            new QOfficialMessageReply { EventId = interaction.EventId }, page);
     }
 
     private async Task SendPageAsync(Channel channel, string userId, QOfficialMessageReply? reply, string page)
@@ -120,8 +137,8 @@ public sealed class RichDemoPlugin : PluginBase
         var markdown = new QCustomMarkdown(content);
         if (target is null || official?.CanSendMarkdown(target, markdown, keyboard) != true)
         {
-            if (reply?.MessageId is not null)
-                await Context.Message.SendMessageAsync(channel, PlainTextPage(page, content)).ConfigureAwait(false);
+            if (target is not null)
+                await SendPlainTextPageAsync(official, target, reply, page, content).ConfigureAwait(false);
             return;
         }
 
@@ -133,8 +150,21 @@ public sealed class RichDemoPlugin : PluginBase
         catch (Exception ex)
         {
             BotLog.Warning($"RichDemo 富消息发送失败，改用普通文本：{ex.Message}");
-            if (reply?.MessageId is not null)
-                await Context.Message.SendMessageAsync(channel, PlainTextPage(page, content)).ConfigureAwait(false);
+            await SendPlainTextPageAsync(official, target, reply, page, content).ConfigureAwait(false);
+        }
+    }
+
+    private async Task SendPlainTextPageAsync(IQOfficialMessageApi? official,
+        QOfficialMessageTarget target, QOfficialMessageReply? reply, string page, string content)
+    {
+        if (official is null || reply is null) return;
+        try
+        {
+            await official.SendTextAsync(target, PlainTextPage(page, content), reply).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            BotLog.Warning($"RichDemo 普通文本回复失败：{ex.Message}");
         }
     }
 
@@ -228,15 +258,18 @@ public sealed class RichDemoPlugin : PluginBase
             await ReplyAsync(message, "输入状态仅支持 QQ 私聊，请在私聊中发送 #typingtest。").ConfigureAwait(false);
             return;
         }
-        var qq = Context.GetAdapterExtension<IQQPlatformMessageService>();
+        var qq = Context.GetAdapterExtension<IQOfficialDirectMessageApi>();
         if (qq is null)
         {
-            await ReplyAsync(message, "QQPlatform 扩展接口不可用，请检查适配器版本。").ConfigureAwait(false);
+            await ReplyAsync(message, "当前适配器不支持 QQ 官方私聊输入状态。").ConfigureAwait(false);
             return;
         }
         try
         {
-            await qq.SendTypingAsync(message.Channel, message.MessageId, TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+            await qq.SendTypingAsync(
+                new QOfficialMessageTarget(QOfficialMessageScene.Direct, message.Channel.Id),
+                new QOfficialMessageReply { MessageId = message.MessageId },
+                TimeSpan.FromSeconds(3)).ConfigureAwait(false);
             await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
             await Context.Message.QuoteReplyAsync(message, "输入状态演示结束。").ConfigureAwait(false);
         }
@@ -254,15 +287,17 @@ public sealed class RichDemoPlugin : PluginBase
             await ReplyAsync(message, "流式消息仅支持 QQ 私聊，请在私聊中发送 #streamtest。").ConfigureAwait(false);
             return;
         }
-        var qq = Context.GetAdapterExtension<IQQPlatformMessageService>();
+        var qq = Context.GetAdapterExtension<IQOfficialDirectMessageApi>();
         if (qq is null)
         {
-            await ReplyAsync(message, "QQPlatform 扩展接口不可用，请检查适配器版本。").ConfigureAwait(false);
+            await ReplyAsync(message, "当前适配器不支持 QQ 官方私聊流式消息。").ConfigureAwait(false);
             return;
         }
-        await using var stream = qq.BeginStream(message.Channel, message.MessageId);
         try
         {
+            await using var stream = qq.BeginStream(
+                new QOfficialMessageTarget(QOfficialMessageScene.Direct, message.Channel.Id),
+                new QOfficialMessageReply { MessageId = message.MessageId });
             await stream.AppendAsync("QQPlatform").ConfigureAwait(false);
             await stream.AppendAsync("QQPlatform 流式").ConfigureAwait(false);
             await stream.AppendAsync("QQPlatform 流式消息演示完成。 ").ConfigureAwait(false);
