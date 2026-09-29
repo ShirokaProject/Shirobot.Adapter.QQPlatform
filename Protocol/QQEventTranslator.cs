@@ -39,6 +39,7 @@ internal static class QQEventTranslator
                     Time = DateTimeOffset.UtcNow,
                     SelfId = long.TryParse(selfId, out var numericSelfId) ? numericSelfId : 0,
                     InteractionId = interaction.Id,
+                    EventId = payload.Id,
                     ButtonData = interaction.Data.Resolved.ButtonData,
                     ButtonId = interaction.Data.Resolved.ButtonId,
                     MessageId = interaction.Data.Resolved.MessageId,

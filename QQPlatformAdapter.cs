@@ -2,7 +2,6 @@ using System.Reflection;
 using ShiroBot.Adapter.QQPlatform.AdapterImpl;
 using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
-using ShiroBot.QQPlatform.Contracts;
 using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Abstractions;
 using ShiroBot.SDK.Adapter;
@@ -18,8 +17,7 @@ namespace ShiroBot.Adapter.QQPlatform;
 
 [BotAdapter("qq-official", Name = "QQPlatformAdapter", Version = "0.1.0",
     Description = "QQ Official Bot OpenAPI adapter", Author = "ShirokaProject",
-    Protocol = "qq-official", IsSingleFile = true,
-    SharedAssemblies = "ShiroBot.QQPlatform.Contracts")]
+    Protocol = "qq-official", IsSingleFile = true)]
 public sealed class QQPlatformAdapter : IBotAdapter
 {
     private readonly QQEventService _events = new();
@@ -69,7 +67,7 @@ public sealed class QQPlatformAdapter : IBotAdapter
         var api = new QQOpenApiClient(_http, config, tokens);
         _api = api;
         _messages = new QQMessageService(api, Logger);
-        _officialMessages = new QQOfficialMessageService(api, _messages, Logger);
+        _officialMessages = new QQOfficialMessageService(api, _messages, Logger, GetCachedGroupName);
         _gateway = new QQGatewayClient(config, api, tokens, DispatchAsync, user =>
         {
             _selfId = user?.Id;
@@ -156,6 +154,10 @@ public sealed class QQPlatformAdapter : IBotAdapter
         _groupNames[groupOpenId] = (name, DateTimeOffset.UtcNow.Add(name is null ? TimeSpan.FromMinutes(5) : TimeSpan.FromHours(1)));
         return name;
     }
+
+    private string? GetCachedGroupName(string groupOpenId) =>
+        _groupNames.TryGetValue(groupOpenId, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow
+            ? cached.Name : null;
 }
 
 internal sealed class QQUserService : IUserService

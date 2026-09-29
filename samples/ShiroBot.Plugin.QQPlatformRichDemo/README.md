@@ -15,7 +15,7 @@
 
 首次加载后，在插件目录的 `config.toml` 中设置 `image_url`，例如 `image_url = "https://example.org/test.png"`。QQPlatform 目前只接受公网 HTTP(S) 图片；本地文件路径不能直接用于这个演示。按钮需要 QQ 平台为机器人开放 Markdown 与自定义 Keyboard 权限；权限不足时插件会显示文本菜单。
 
-Markdown、Keyboard 和按钮事件使用主仓库 `ShiroBot.Model.QQ` 的模型。示例通过 `IQOfficialMessageApi` 发送官方富消息，监听 `QOfficialButtonInteraction`；输入状态和流式消息继续使用适配器 `Contracts` 中的扩展接口。
+Markdown、Keyboard 和按钮事件使用主仓库 `ShiroBot.Model.QQ` 的模型。示例通过 `IQOfficialMessageApi` 发送官方富消息，监听 `QOfficialButtonInteraction`；输入状态和流式消息通过主仓库的 `IQOfficialDirectMessageApi` 能力接口调用。插件不引用具体适配器程序集。
 
 输入状态和流式消息只支持 QQ 私聊。流式接口的 `AppendAsync` 接收截至当前的完整文本，后续文本须保留前一次内容作为前缀；最后调用 `CompleteAsync`。
 
@@ -27,4 +27,4 @@ dotnet build .\ShiroBot.Plugin.QQPlatformRichDemo.csproj -c Release
 
 构建时需要同级目录 `../Shirobot` 的主仓库源码；其他位置可传入 `-p:ShiroBotSourceRoot=主仓库路径`。
 
-将构建出的 `ShiroBot.Plugin.QQPlatformRichDemo.dll` 和 `ShiroBot.QQPlatform.Contracts.dll` 放到宿主的 `plugins/ShiroBot.Plugin.QQPlatformRichDemo` 目录；QQPlatform 适配器也需已安装。
+将构建出的 `ShiroBot.Plugin.QQPlatformRichDemo.dll` 放到宿主的 `plugins/ShiroBot.Plugin.QQPlatformRichDemo` 目录；QQPlatform 适配器也需已安装。

@@ -2,7 +2,6 @@ using System.Text;
 using System.Text.Json;
 using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
-using ShiroBot.QQPlatform.Contracts;
 using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Adapter;
 using ShiroBot.SDK.Models;
@@ -10,7 +9,7 @@ using ShiroBot.SDK.Plugin;
 
 namespace ShiroBot.Adapter.QQPlatform.AdapterImpl;
 
-internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logger = null) : IMessageService, IQQPlatformMessageService
+internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logger = null) : IMessageService
 {
     private readonly Dictionary<string, int> _sequences = [];
     private readonly Queue<string> _sequenceOrder = new();
@@ -135,8 +134,12 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         logger?.Info($"已发送私聊输入状态到 {channel.Id}: {seconds} 秒");
     }
 
-    public IQQPlatformMessageStream BeginStream(Channel channel, string replyToMessageId,
-        QQStreamContentType contentType = QQStreamContentType.Text)
+    internal IQOfficialMessageStream BeginOfficialStream(Channel channel, string replyToMessageId,
+        QOfficialStreamContentType contentType = QOfficialStreamContentType.Text) =>
+        BeginStreamCore(channel, replyToMessageId, contentType);
+
+    private QQPlatformMessageStream BeginStreamCore(Channel channel, string replyToMessageId,
+        QOfficialStreamContentType contentType)
     {
         if (channel.Type != ChannelType.Direct)
             throw new NotSupportedException("QQ Official stream messages support C2C only.");
@@ -164,17 +167,6 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
             };
         }
         return SendAndLogAsync(channel, request, description);
-    }
-
-    public Task<SentMessage> SendArkAsync(Channel channel, int templateId, IReadOnlyDictionary<string, string> fields, string replyToMessageId)
-    {
-        ArgumentNullException.ThrowIfNull(fields);
-        if (templateId <= 0) throw new ArgumentOutOfRangeException(nameof(templateId));
-        var values = fields.Select(field => new QQArkField(field.Key, field.Value)).ToArray();
-        return SendAndLogAsync(channel, WithReply(new QQSendRequest
-        {
-            MessageType = 3, Ark = new QQArk(templateId, values)
-        }, replyToMessageId), $"[Ark 模板 {templateId}]");
     }
 
     private async Task<SentMessage> SendAndLogAsync(Channel channel, QQSendRequest request, string description)
