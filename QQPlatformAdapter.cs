@@ -27,6 +27,7 @@ public sealed class QQPlatformAdapter : IBotAdapter
     private readonly HashSet<string> _seen = [];
     private readonly Dictionary<string, (string? Name, DateTimeOffset ExpiresAt)> _groupNames = [];
     private HttpClient? _http;
+    private HttpClient? _uploadHttp;
     private QQGatewayClient? _gateway;
     private QQMessageService? _messages;
     private QQOfficialMessageService? _officialMessages;
@@ -63,8 +64,9 @@ public sealed class QQPlatformAdapter : IBotAdapter
         config.Validate();
         _config = config;
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _uploadHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         var tokens = new QQTokenProvider(_http, config);
-        var api = new QQOpenApiClient(_http, config, tokens);
+        var api = new QQOpenApiClient(_http, config, tokens, _uploadHttp);
         _api = api;
         _messages = new QQMessageService(api, Logger);
         _officialMessages = new QQOfficialMessageService(api, _messages, Logger, GetCachedGroupName);
@@ -88,6 +90,8 @@ public sealed class QQPlatformAdapter : IBotAdapter
         _api = null;
         _http?.Dispose();
         _http = null;
+        _uploadHttp?.Dispose();
+        _uploadHttp = null;
         _selfId = null;
         _users.Self = null;
         _config = null;

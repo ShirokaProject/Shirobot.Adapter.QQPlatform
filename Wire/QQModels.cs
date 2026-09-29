@@ -106,6 +106,7 @@ internal sealed record QQSendRequest
     [JsonPropertyName("markdown"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQMarkdown? Markdown { get; init; }
     [JsonPropertyName("keyboard"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQKeyboardWire? Keyboard { get; init; }
     [JsonPropertyName("ark"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQArk? Ark { get; init; }
+    [JsonPropertyName("embed"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQEmbed? Embed { get; init; }
     [JsonPropertyName("input_notify"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQInputNotify? InputNotify { get; init; }
 }
 
@@ -173,6 +174,15 @@ internal sealed record QQArk(
 internal sealed record QQArkField(
     [property: JsonPropertyName("key")] string Key,
     [property: JsonPropertyName("value")] string Value);
+internal sealed record QQEmbed
+{
+    [JsonPropertyName("title"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Title { get; init; }
+    [JsonPropertyName("prompt"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Prompt { get; init; }
+    [JsonPropertyName("thumbnail"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQEmbedThumbnail? Thumbnail { get; init; }
+    [JsonPropertyName("fields"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public IReadOnlyList<QQEmbedField>? Fields { get; init; }
+}
+internal sealed record QQEmbedThumbnail([property: JsonPropertyName("url")] string Url);
+internal sealed record QQEmbedField([property: JsonPropertyName("name")] string Name);
 internal sealed record QQSendResponse(
     [property: JsonPropertyName("id")] string? Id,
     [property: JsonPropertyName("timestamp")] JsonElement Timestamp);
@@ -180,5 +190,37 @@ internal sealed record QQSendResponse(
 internal sealed record QQUploadRequest(
     [property: JsonPropertyName("file_type")] int FileType,
     [property: JsonPropertyName("url")] string Url,
-    [property: JsonPropertyName("srv_send_msg")] bool ServerSendMessage);
-internal sealed record QQUploadResponse([property: JsonPropertyName("file_info")] string FileInfo);
+    [property: JsonPropertyName("srv_send_msg")] bool ServerSendMessage,
+    [property: JsonPropertyName("file_name"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? FileName = null);
+internal sealed record QQUploadResponse(
+    [property: JsonPropertyName("file_info")] string? FileInfo,
+    [property: JsonPropertyName("id")] string? Id);
+
+internal sealed record QQUploadPrepareRequest(
+    [property: JsonPropertyName("file_type")] int FileType,
+    [property: JsonPropertyName("file_size")] string FileSize,
+    [property: JsonPropertyName("file_name")] string FileName,
+    [property: JsonPropertyName("md5")] string Md5,
+    [property: JsonPropertyName("sha1")] string Sha1,
+    [property: JsonPropertyName("md5_10m")] string Md5First10M);
+
+internal sealed record QQUploadPrepareResponse(
+    [property: JsonPropertyName("upload_id")] string? UploadId,
+    [property: JsonPropertyName("block_size"), JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)] int BlockSize,
+    [property: JsonPropertyName("parts")] IReadOnlyList<QQUploadPart>? Parts);
+
+internal sealed record QQUploadPart(
+    [property: JsonPropertyName("index")] int Index,
+    [property: JsonPropertyName("presigned_url")] string? PresignedUrl);
+
+internal sealed record QQUploadPartFinishRequest(
+    [property: JsonPropertyName("upload_id")] string UploadId,
+    [property: JsonPropertyName("part_index")] int PartIndex,
+    [property: JsonPropertyName("block_size")] string BlockSize,
+    [property: JsonPropertyName("md5")] string Md5);
+
+internal sealed record QQUploadCompleteRequest(
+    [property: JsonPropertyName("file_type")] int FileType,
+    [property: JsonPropertyName("srv_send_msg")] bool ServerSendMessage,
+    [property: JsonPropertyName("file_name")] string FileName,
+    [property: JsonPropertyName("upload_id")] string UploadId);

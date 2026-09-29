@@ -6,12 +6,20 @@ using ShiroBot.SDK.Models;
 
 namespace ShiroBot.Adapter.QQPlatform.Protocol;
 
-internal sealed class QQOpenApiClient(HttpClient http, QQPlatformConfig config, QQTokenProvider tokens)
+internal sealed class QQOpenApiClient
 {
-    private readonly QQApiTransport _transport = new(http, config, tokens);
+    private readonly QQApiTransport _transport;
+    private readonly QQChunkedUploadClient _chunked;
     private readonly Dictionary<string, long> _acknowledged = [];
     private readonly Queue<(string Id, long Serial)> _acknowledgementOrder = new();
     private long _acknowledgementSerial;
+
+    public QQOpenApiClient(HttpClient http, QQPlatformConfig config, QQTokenProvider tokens,
+        HttpClient? uploadHttp = null)
+    {
+        _transport = new QQApiTransport(http, config, tokens);
+        _chunked = new QQChunkedUploadClient(_transport, uploadHttp ?? http);
+    }
 
     public async Task<Uri> GetGatewayAsync(CancellationToken cancellationToken)
     {
@@ -24,8 +32,11 @@ internal sealed class QQOpenApiClient(HttpClient http, QQPlatformConfig config, 
     }
 
     public async Task<SentMessage> SendMessageAsync(Channel channel, QQSendRequest message, CancellationToken cancellationToken = default)
+        => await SendMessageAsync(QQApiRoutes.Messages(channel), message, cancellationToken).ConfigureAwait(false);
+
+    public async Task<SentMessage> SendMessageAsync(string route, QQSendRequest message, CancellationToken cancellationToken = default)
     {
-        using var response = await _transport.SendAsync(HttpMethod.Post, QQApiRoutes.Messages(channel), message, cancellationToken).ConfigureAwait(false);
+        using var response = await _transport.SendAsync(HttpMethod.Post, route, message, cancellationToken).ConfigureAwait(false);
         var sent = await response.Content.ReadFromJsonAsync<QQSendResponse>(cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("QQ message response is empty.");
         if (string.IsNullOrWhiteSpace(sent.Id))
@@ -50,16 +61,53 @@ internal sealed class QQOpenApiClient(HttpClient http, QQPlatformConfig config, 
         return sent?.Id;
     }
 
-    public async Task<string> UploadRemoteAsync(Channel channel, int fileType, Uri uri, CancellationToken cancellationToken = default)
+    public async Task<string> UploadRemoteAsync(Channel channel, int fileType, Uri uri,
+        string? fileName = null, CancellationToken cancellationToken = default)
     {
-        if (uri.Scheme is not ("http" or "https"))
-            throw new NotSupportedException("QQ Official media upload currently requires an HTTP(S) URL.");
-        using var response = await _transport.SendAsync(HttpMethod.Post, QQApiRoutes.Files(channel),
-            new QQUploadRequest(fileType, uri.AbsoluteUri, false), cancellationToken).ConfigureAwait(false);
-        var uploaded = await response.Content.ReadFromJsonAsync<QQUploadResponse>(cancellationToken).ConfigureAwait(false);
+        var uploaded = await PostRemoteAsync(channel, fileType, uri, false, fileName, cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(uploaded?.FileInfo))
             throw new InvalidDataException("QQ media upload response contains no file_info.");
         return uploaded.FileInfo;
+    }
+
+    public async Task<SentMessage> SendRemoteAsync(Channel channel, int fileType, Uri uri,
+        string? fileName = null, CancellationToken cancellationToken = default)
+    {
+        var uploaded = await PostRemoteAsync(channel, fileType, uri, true, fileName, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(uploaded.Id))
+            throw new InvalidDataException("QQ direct media send response contains no message ID.");
+        return new SentMessage(uploaded.Id);
+    }
+
+    public async Task<string> UploadLocalAsync(Channel channel, int fileType, string path,
+        string fileName, CancellationToken cancellationToken = default)
+    {
+        var uploaded = await _chunked.UploadAsync(channel, fileType, path, fileName, false, cancellationToken)
+            .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(uploaded.FileInfo))
+            throw new InvalidDataException("QQ local upload response contains no file_info.");
+        return uploaded.FileInfo;
+    }
+
+    public async Task<SentMessage> SendLocalAsync(Channel channel, int fileType, string path,
+        string fileName, CancellationToken cancellationToken = default)
+    {
+        var uploaded = await _chunked.UploadAsync(channel, fileType, path, fileName, true, cancellationToken)
+            .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(uploaded.Id))
+            throw new InvalidDataException("QQ direct local upload response contains no message ID.");
+        return new SentMessage(uploaded.Id);
+    }
+
+    private async Task<QQUploadResponse> PostRemoteAsync(Channel channel, int fileType, Uri uri,
+        bool sendMessage, string? fileName, CancellationToken cancellationToken)
+    {
+        if (uri.Scheme is not ("http" or "https"))
+            throw new NotSupportedException("QQ Official media upload requires an HTTP(S) URL.");
+        using var response = await _transport.SendAsync(HttpMethod.Post, QQApiRoutes.Files(channel),
+            new QQUploadRequest(fileType, uri.AbsoluteUri, sendMessage, fileName), cancellationToken).ConfigureAwait(false);
+        return await response.Content.ReadFromJsonAsync<QQUploadResponse>(cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("QQ media upload response is empty.");
     }
 
     public async Task<string?> GetGroupNameAsync(string groupOpenId, CancellationToken cancellationToken = default)
