@@ -1,0 +1,28 @@
+when:
+  - event: [push, pull_request, manual]
+
+labels:
+  platform: linux/amd64
+  ci: domain-linux-native
+
+skip_clone: true
+
+steps:
+  - name: clone-sources
+    image: bash
+    commands:
+      - git init .
+      - git remote add origin https://git.oeo.one/justme/Shirobot.Adapter.QQPlatform.git
+      - git fetch --depth=1 origin "${CI_COMMIT_REF}"
+      - git checkout --detach FETCH_HEAD
+      - git -C ../Shirobot init
+      - git -C ../Shirobot remote add origin https://git.oeo.one/justme/Shirobot.git
+      - git -C ../Shirobot fetch --depth=1 origin master
+      - git -C ../Shirobot checkout --detach FETCH_HEAD
+
+  - name: verify
+    image: bash
+    commands:
+      - dotnet --version
+      - dotnet build ShiroBot.Adapter.QQPlatform.sln -c Release
+      - dotnet test tests/ShiroBot.QQPlatform.Tests/ShiroBot.QQPlatform.Tests.csproj -c Release --no-build
