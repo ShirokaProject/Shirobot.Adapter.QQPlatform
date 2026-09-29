@@ -62,8 +62,10 @@ steps:
         release_assets="$(curl -fsS -H "Authorization: token $GITEA_RELEASE_TOKEN" "$api_root/releases/$release_id/assets")"
         for file in "$package_dir/ShiroBot.Adapter.QQPlatform.dll" "$package_dir/ShiroBot.Adapter.QQPlatform.dll.sha256"; do
           asset_name="$(basename "$file")"
-          if printf '%s' "$release_assets" | tr -d '[:space:]' | grep -Fq "\"name\":\"$asset_name\""; then
-            continue
+          asset_id="$(printf '%s\n' "$release_assets" | tr '{' '\n' | sed -n "s/.*\"id\":\([0-9][0-9]*\).*\"name\":\"$asset_name\".*/\1/p" | head -n 1)"
+          if [ -n "$asset_id" ]; then
+            curl -fsS -X DELETE "$api_root/releases/$release_id/assets/$asset_id" \
+              -H "Authorization: token $GITEA_RELEASE_TOKEN" > /dev/null
           fi
           curl -fsS -X POST "$api_root/releases/$release_id/assets?name=$asset_name" \
             -H "Authorization: token $GITEA_RELEASE_TOKEN" \
