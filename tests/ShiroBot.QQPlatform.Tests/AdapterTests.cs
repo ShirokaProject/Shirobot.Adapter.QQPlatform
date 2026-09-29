@@ -79,6 +79,7 @@ public sealed class AdapterTests
         Assert.EndsWith("/v2/groups/group-1/messages", handler.Requests[1].Uri);
         Assert.Equal("QQBot token-1", handler.Requests[1].Authorization);
         Assert.Equal("incoming", JsonDocument.Parse(handler.Requests[1].Body).RootElement.GetProperty("msg_id").GetString());
+        Assert.Equal(0, JsonDocument.Parse(handler.Requests[1].Body).RootElement.GetProperty("msg_type").GetInt32());
         Assert.Equal(1, JsonDocument.Parse(handler.Requests[1].Body).RootElement.GetProperty("msg_seq").GetInt32());
         Assert.Equal(2, JsonDocument.Parse(handler.Requests[2].Body).RootElement.GetProperty("msg_seq").GetInt32());
         Assert.Equal(2, logger.Messages.Count);
@@ -103,7 +104,10 @@ public sealed class AdapterTests
         var sent = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
         Assert.Equal("incoming-1", sent.GetProperty("msg_id").GetString());
         Assert.Equal("REFIDX_123==", sent.GetProperty("message_reference").GetProperty("message_id").GetString());
-        Assert.Equal("<qqbot-at-user id=\"member-1\" /> 收到你的 @ 了", sent.GetProperty("content").GetString());
+        Assert.Equal(2, sent.GetProperty("msg_type").GetInt32());
+        Assert.False(sent.TryGetProperty("content", out _));
+        Assert.Equal("<qqbot-at-user id=\"member-1\" /> 收到你的 @ 了",
+            sent.GetProperty("markdown").GetProperty("content").GetString());
         Assert.Contains("已发送群消息到 测试群: @小明 收到你的 @ 了", logger.Messages);
     }
 

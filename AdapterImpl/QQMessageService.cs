@@ -60,6 +60,7 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
 
         var content = new StringBuilder();
         var displayContent = new StringBuilder();
+        var hasNativeMention = false;
         ResourceSegment? resource = null;
         foreach (var segment in segments)
         {
@@ -73,6 +74,7 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
                 case MentionSegment mention when channel.Type == ChannelType.Group && IsSafeOpenId(mention.UserId):
                     content.Append("<qqbot-at-user id=\"").Append(mention.UserId).Append("\" /> ");
                     displayContent.Append('@').Append(mention.DisplayName ?? "用户").Append(' ');
+                    hasNativeMention = true;
                     break;
                 case MentionSegment mention:
                     content.Append('@').Append(mention.DisplayName ?? "用户").Append(' ');
@@ -106,7 +108,9 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         else
         {
             if (content.Length == 0) throw new ArgumentException("Message has no sendable content.", nameof(segments));
-            request = new QQSendRequest { MessageType = 0, Content = content.ToString() };
+            request = hasNativeMention
+                ? new QQSendRequest { MessageType = 2, Markdown = new QQMarkdown { Content = content.ToString() } }
+                : new QQSendRequest { MessageType = 0, Content = content.ToString() };
         }
         if (quotes.Length == 1 && GetReferenceIndex(channel, quotes[0].MessageId) is { } referenceIndex)
             request = request with { MessageReference = new QQMessageReference(referenceIndex) };
