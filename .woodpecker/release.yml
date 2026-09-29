@@ -25,6 +25,7 @@ steps:
         git fetch --depth=1 origin "${CI_COMMIT_REF}"
         git checkout --detach FETCH_HEAD
 
+        mkdir -p ../Shirobot
         git -C ../Shirobot init
         git -C ../Shirobot remote add origin https://git.oeo.one/justme/Shirobot.git
         git -C ../Shirobot fetch --depth=1 origin master
