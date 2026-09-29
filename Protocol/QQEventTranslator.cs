@@ -9,7 +9,7 @@ internal static class QQEventTranslator
 {
     internal const string Platform = "qq-official";
 
-    public static BotEvent? Translate(GatewayPayload payload, string? selfId)
+    public static BotEvent? Translate(GatewayPayload payload, string? selfId, string? selfName = null)
     {
         if (payload.EventType is not { Length: > 0 } type) return null;
         var raw = payload.Data.Clone();
@@ -67,9 +67,19 @@ internal static class QQEventTranslator
                 .GroupBy(mention => mention.Id!, StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => group.First().Username!, StringComparer.Ordinal);
             segments.AddRange(QQContentParser.Parse(message.Content, mentionNames));
-            if (type == "GROUP_AT_MESSAGE_CREATE" && !string.IsNullOrWhiteSpace(selfId)
-                && !segments.OfType<MentionSegment>().Any(mention => mention.UserId == selfId))
-                segments.Insert(0, new MentionSegment(selfId));
+            if (type == "GROUP_AT_MESSAGE_CREATE" && !string.IsNullOrWhiteSpace(selfId))
+            {
+                var botName = string.IsNullOrWhiteSpace(selfName) ? "机器人" : selfName;
+                var selfMention = segments.OfType<MentionSegment>()
+                    .FirstOrDefault(mention => mention.UserId == selfId);
+                if (selfMention is null)
+                    segments.Insert(0, new MentionSegment(selfId) { DisplayName = botName });
+                else if (string.IsNullOrWhiteSpace(selfMention.DisplayName))
+                {
+                    var index = segments.IndexOf(selfMention);
+                    segments[index] = selfMention with { DisplayName = botName };
+                }
+            }
             foreach (var attachment in message.Attachments ?? [])
             {
                 var url = attachment.VoiceWavUrl ?? attachment.Url;

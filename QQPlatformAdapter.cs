@@ -111,7 +111,7 @@ public sealed class QQPlatformAdapter : IBotAdapter
         }
         try
         {
-            var translated = QQEventTranslator.Translate(payload, _selfId);
+            var translated = QQEventTranslator.Translate(payload, _selfId, _users.Self?.Name);
             if (translated is PlatformEvent
                 { Kind: QEventKinds.OfficialButtonInteraction, Raw: QOfficialButtonInteraction interaction } platformEvent)
             {

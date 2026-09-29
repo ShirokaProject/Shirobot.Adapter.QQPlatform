@@ -33,9 +33,10 @@ public sealed class AdapterTests
     [Fact]
     public async Task GroupAtContentProducesMentionEmojiAndRoutableCommandText()
     {
-        var data = JsonDocument.Parse("""{"id":"message-2","group_openid":"group-1","author":{"member_openid":"member-1"},"content":"<@!bot-1> #ping<faceType=1,faceId=\"264\",ext=\"eyJ0ZXh0Ijoi5o2C6IS4In0=\">"}""").RootElement;
-        var message = Assert.IsType<MessageEvent>(QQEventTranslator.Translate(new GatewayPayload(0, data, 2, "GROUP_AT_MESSAGE_CREATE", "evt-2"), "bot-1"));
-        Assert.True(message.HasMention("bot-1"));
+        var data = JsonDocument.Parse("""{"id":"message-2","group_openid":"group-1","author":{"member_openid":"member-1"},"content":"<@!12345678901234567890> #ping<faceType=1,faceId=\"264\",ext=\"eyJ0ZXh0Ijoi5o2C6IS4In0=\">"}""").RootElement;
+        var message = Assert.IsType<MessageEvent>(QQEventTranslator.Translate(new GatewayPayload(0, data, 2, "GROUP_AT_MESSAGE_CREATE", "evt-2"), "12345678901234567890", "测试机器人"));
+        Assert.True(message.HasMention("12345678901234567890"));
+        Assert.Equal("测试机器人", Assert.Single(message.Segments.OfType<MentionSegment>()).DisplayName);
         Assert.Equal("#ping", message.GetPlainText().Trim());
         Assert.Equal("捂脸", Assert.Single(message.Segments.OfType<EmojiSegment>()).Name);
         var called = false;
