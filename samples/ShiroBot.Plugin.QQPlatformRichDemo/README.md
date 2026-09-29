@@ -11,6 +11,7 @@
 | `#typingtest` | 私聊发送 3 秒输入状态，随后回复结果 |
 | `#streamtest` | 私聊逐步更新同一条流式消息 |
 | `#rich` | 显示帮助 |
+| `@机器人` | 群聊中引用原消息并 @ 发送者；已匹配的演示命令优先处理 |
 
 首次加载后，在插件目录的 `config.toml` 中设置 `image_url`，例如 `image_url = "https://example.org/test.png"`。QQPlatform 目前只接受公网 HTTP(S) 图片；本地文件路径不能直接用于这个演示。按钮需要 QQ 平台为机器人开放 Markdown 与自定义 Keyboard 权限；权限不足时插件会显示文本菜单。
 

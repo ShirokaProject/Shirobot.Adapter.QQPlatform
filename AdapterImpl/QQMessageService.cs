@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
 using ShiroBot.QQPlatform.Contracts;
@@ -15,6 +16,8 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
     private readonly Queue<string> _sequenceOrder = new();
     private readonly Dictionary<string, (string MessageId, DateTimeOffset SeenAt)> _recent = [];
     private readonly Queue<string> _recentOrder = new();
+    private readonly Dictionary<(ChannelType Type, string ChannelId, string MessageId), string> _referenceIndexes = [];
+    private readonly Queue<(ChannelType Type, string ChannelId, string MessageId)> _referenceOrder = new();
 
     public void RegisterIncoming(MessageEvent message)
     {
@@ -24,6 +27,26 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
             if (!_recent.ContainsKey(key)) _recentOrder.Enqueue(key);
             _recent[key] = (message.MessageId, DateTimeOffset.UtcNow);
             while (_recentOrder.Count > 4096) _recent.Remove(_recentOrder.Dequeue());
+        }
+        if (message.Raw is not JsonElement { ValueKind: JsonValueKind.Object } raw
+            || !raw.TryGetProperty("message_scene", out var scene)
+            || scene.ValueKind != JsonValueKind.Object
+            || !scene.TryGetProperty("ext", out var extensions)
+            || extensions.ValueKind != JsonValueKind.Array) return;
+        foreach (var extension in extensions.EnumerateArray())
+        {
+            if (extension.ValueKind != JsonValueKind.String
+                || extension.GetString() is not { } value
+                || !value.StartsWith("msg_idx=", StringComparison.Ordinal)
+                || value.Length <= "msg_idx=".Length) continue;
+            var referenceKey = (message.Channel.Type, message.Channel.Id, message.MessageId);
+            lock (_referenceIndexes)
+            {
+                if (!_referenceIndexes.ContainsKey(referenceKey)) _referenceOrder.Enqueue(referenceKey);
+                _referenceIndexes[referenceKey] = value["msg_idx=".Length..];
+                while (_referenceOrder.Count > 4096) _referenceIndexes.Remove(_referenceOrder.Dequeue());
+            }
+            break;
         }
     }
 
@@ -43,7 +66,12 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
             {
                 case QuoteSegment: break;
                 case TextSegment text: content.Append(text.Text); break;
-                case MentionSegment mention: content.Append('@').Append(mention.DisplayName ?? mention.UserId).Append(' '); break;
+                case MentionSegment mention when channel.Type == ChannelType.Group && IsSafeOpenId(mention.UserId):
+                    content.Append("<qqbot-at-user id=\"").Append(mention.UserId).Append("\" /> ");
+                    break;
+                case MentionSegment mention:
+                    content.Append('@').Append(mention.DisplayName ?? "用户").Append(' ');
+                    break;
                 case MentionAllSegment: content.Append("@全体成员 "); break;
                 case EmojiSegment emoji: content.Append(emoji.Name ?? $":{emoji.Id}:"); break;
                 case ImageSegment image when resource is null: resource = image; break;
@@ -67,6 +95,8 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
             if (content.Length == 0) throw new ArgumentException("Message has no sendable content.", nameof(segments));
             request = new QQSendRequest { MessageType = 0, Content = content.ToString() };
         }
+        if (quotes.Length == 1 && GetReferenceIndex(channel, quotes[0].MessageId) is { } referenceIndex)
+            request = request with { MessageReference = new QQMessageReference(referenceIndex) };
         return await SendAndLogAsync(channel, WithReply(request, replyToMessageId),
             resource is null ? content.ToString() : "[图片]").ConfigureAwait(false);
     }
@@ -166,4 +196,14 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
     }
 
     private static string ChannelKey(Channel channel) => $"{(int)channel.Type}:{channel.Id}";
+
+    private string? GetReferenceIndex(Channel channel, string messageId)
+    {
+        lock (_referenceIndexes)
+            return _referenceIndexes.GetValueOrDefault((channel.Type, channel.Id, messageId));
+    }
+
+    private static bool IsSafeOpenId(string userId) =>
+        userId is { Length: > 0 and <= 128 } && userId.All(c => c is >= 'A' and <= 'Z'
+            or >= 'a' and <= 'z' or >= '0' and <= '9' or '_' or '-');
 }

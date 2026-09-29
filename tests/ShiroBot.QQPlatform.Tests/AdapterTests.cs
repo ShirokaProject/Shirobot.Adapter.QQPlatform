@@ -85,6 +85,26 @@ public sealed class AdapterTests
     }
 
     [Fact]
+    public async Task QuoteReplyUsesOfficialReferenceIndexAndNativeGroupMention()
+    {
+        var data = JsonDocument.Parse("""{"id":"incoming-1","group_openid":"group-1","author":{"member_openid":"member-1","username":"小明"},"content":"<@bot-1> 你好","message_scene":{"ext":["msg_idx=REFIDX_123==","auth_token=not-used"]}}""").RootElement;
+        var incoming = Assert.IsType<MessageEvent>(QQEventTranslator.Translate(
+            new GatewayPayload(0, data, 1, "GROUP_AT_MESSAGE_CREATE", "event-1"), "bot-1"));
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
+        messages.RegisterIncoming(incoming);
+        await messages.SendMessageAsync(incoming.Channel,
+            [new QuoteSegment(incoming.MessageId), new MentionSegment(incoming.Sender.Id) { DisplayName = incoming.Sender.Name },
+                new TextSegment("收到你的 @ 了")]);
+        var sent = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+        Assert.Equal("incoming-1", sent.GetProperty("msg_id").GetString());
+        Assert.Equal("REFIDX_123==", sent.GetProperty("message_reference").GetProperty("message_id").GetString());
+        Assert.Equal("<qqbot-at-user id=\"member-1\" /> 收到你的 @ 了", sent.GetProperty("content").GetString());
+    }
+
+    [Fact]
     public async Task GroupInfoUsesOfficialEndpointAndReturnsGroupName()
     {
         var handler = new FakeHandler();

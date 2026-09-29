@@ -31,7 +31,8 @@ QQPlatformAdapter                 宿主生命周期、事件入口
 - 群聊/私聊文本回复、远程 HTTP(S) 图片上传与发送、Markdown/Ark 扩展、删除消息。
 - 富消息通过上游 `IQOfficialMessageApi.SendMarkdownAsync` 发送，支持自定义或模板 Markdown、自定义或模板 Keyboard，以及跳转、回调、指令按钮。按钮回调以 `QOfficialButtonInteraction` 上报，适配器自动确认点击；插件可用事件 ID 被动回复。官方接口也支持不带回复引用的主动 Markdown 发送。
 - 发送接口确认成功后，在 CLI 记录回复目标和内容；图片、Markdown 与 Ark 也有对应的发送日志。
-- `msg_id` + 递增 `msg_seq` 被动回复。显式 `QuoteSegment` 优先；普通 `ReplyAsync` 使用同会话最近 5 分钟的入站消息 ID，方便现有 ShiroBot 插件使用。
+- `msg_id` + 递增 `msg_seq` 被动回复。显式 `QuoteSegment` 优先；若入站群消息带有 `message_scene.ext` 中的 `msg_idx`，还会写入 `message_reference`，让 QQ 客户端显示引用。普通 `ReplyAsync` 使用同会话最近 5 分钟的入站消息 ID，方便现有 ShiroBot 插件使用。
+- 群聊发送 `MentionSegment` 时使用成员 OpenID 生成 QQ 原生 @ 标记；无法识别的标识回退为可读文本。
 
 ## 配置
 

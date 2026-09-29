@@ -51,6 +51,10 @@ public sealed class RichDemoPlugin : PluginBase
         Map("action/help", message => SendPageAsync(message.Channel, message.Sender.Id,
             new QOfficialMessageReply { MessageId = message.MessageId }, "help"));
         Map("rich", message => ReplyAsync(message, HelpMenu));
+        GroupCommands.MapWhen(message => !message.Sender.IsBot
+                && message.SelfId is { Length: > 0 } selfId
+                && message.HasMention(selfId),
+            HandleMentionAsync);
         Events.MapPlatform(QEventKinds.OfficialButtonInteraction, HandleInteractionAsync);
     }
 
@@ -80,6 +84,14 @@ public sealed class RichDemoPlugin : PluginBase
 
     private Task ReplyAsync(MessageEvent message, string text) =>
         Context.Message.ReplyAsync(message, text);
+
+    private Task HandleMentionAsync(MessageEvent message) =>
+        Context.Message.QuoteReplyAsync(message,
+            new MentionSegment(message.Sender.Id)
+            {
+                DisplayName = message.Member?.Nick ?? message.Sender.Name
+            },
+            new TextSegment("收到你的 @ 了，这是对原消息的引用回复。"));
 
     private async Task SendImageAsync(MessageEvent message)
     {
