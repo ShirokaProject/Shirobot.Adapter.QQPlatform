@@ -1,4 +1,6 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using ShiroBot.Adapter.QQPlatform;
 using ShiroBot.Adapter.QQPlatform.AdapterImpl;
@@ -160,7 +162,7 @@ public sealed class AdapterTests
         var target = new QOfficialMessageTarget(QOfficialMessageScene.Direct, "user-1");
         var markdown = new QTemplateMarkdown("template-1", [new QMarkdownParameter("name", ["Alice"])]);
         Assert.True(official.CanSendMarkdown(target, markdown, new QKeyboardTemplate("keyboard-1")));
-        Assert.False(official.CanSendMarkdown(
+        Assert.True(official.CanSendMarkdown(
             new QOfficialMessageTarget(QOfficialMessageScene.Channel, "channel-1"), markdown));
         await official.SendMarkdownAsync(target, markdown, new QKeyboardTemplate("keyboard-1"),
             new QOfficialMessageReply());
@@ -362,6 +364,268 @@ public sealed class AdapterTests
         Assert.Equal("file-1", sent.GetProperty("media").GetProperty("file_info").GetString());
     }
 
+    [Theory]
+    [InlineData(QOfficialMessageScene.Channel, "channels/channel-1/messages")]
+    [InlineData(QOfficialMessageScene.ChannelDirect, "dms/guild-1/messages")]
+    public async Task OfficialEmbedSupportsChannelScenes(QOfficialMessageScene scene, string expectedRoute)
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        IQOfficialMessageApi official = new QQOfficialMessageService(api, new QQMessageService(api));
+
+        await official.SendEmbedAsync(new QOfficialMessageTarget(scene,
+                scene == QOfficialMessageScene.Channel ? "channel-1" : "guild-1"),
+            new QOfficialEmbed
+            {
+                Title = "天气",
+                Prompt = "深圳天气",
+                Thumbnail = new QOfficialEmbedThumbnail("https://example.org/weather.png"),
+                Fields = [new QOfficialEmbedField("晴，28°C")]
+            },
+            new QOfficialMessageReply { EventId = "event-1" });
+
+        Assert.EndsWith(expectedRoute, handler.Requests[^1].Uri);
+        var root = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+        Assert.Equal(4, root.GetProperty("msg_type").GetInt32());
+        Assert.Equal("event-1", root.GetProperty("event_id").GetString());
+        Assert.Equal("天气", root.GetProperty("embed").GetProperty("title").GetString());
+        Assert.Equal("https://example.org/weather.png", root.GetProperty("embed").GetProperty("thumbnail").GetProperty("url").GetString());
+        Assert.Equal("晴，28°C", root.GetProperty("embed").GetProperty("fields")[0].GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task ChannelMarkdownSupportsRoleRestrictedKeyboard()
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        var official = new QQOfficialMessageService(api, new QQMessageService(api));
+        var keyboard = new QInlineKeyboard([new QKeyboardRow([new QKeyboardButton
+        {
+            Id = "role-only",
+            RenderData = new QKeyboardRenderData("管理操作", "管理操作", QKeyboardButtonStyle.Blue),
+            Action = new QKeyboardAction
+            {
+                Type = QKeyboardActionType.Callback,
+                Data = "admin",
+                Permission = new QKeyboardPermission
+                {
+                    Type = QKeyboardPermissionType.SpecifiedRoles,
+                    SpecifyRoleIds = ["role-1"]
+                },
+                UnsupportTips = "请更新客户端"
+            }
+        }])]);
+
+        Assert.True(official.CanSendMarkdown(new QOfficialMessageTarget(QOfficialMessageScene.Channel, "channel-1"),
+            new QCustomMarkdown("# 操作"), keyboard));
+        Assert.False(official.CanSendMarkdown(new QOfficialMessageTarget(QOfficialMessageScene.Group, "group-1"),
+            new QCustomMarkdown("# 操作"), keyboard));
+        await official.SendMarkdownAsync(new QOfficialMessageTarget(QOfficialMessageScene.Channel, "channel-1"),
+            new QCustomMarkdown("# 操作"), keyboard, new QOfficialMessageReply { EventId = "event-1" });
+        var roleIds = JsonDocument.Parse(handler.Requests[^1].Body).RootElement
+            .GetProperty("keyboard").GetProperty("content").GetProperty("rows")[0]
+            .GetProperty("buttons")[0].GetProperty("action").GetProperty("permission")
+            .GetProperty("specify_role_ids");
+        Assert.Equal("role-1", roleIds[0].GetString());
+    }
+
+    [Fact]
+    public async Task GroupFilePostsDirectlyToFilesEndpoint()
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
+
+        var sent = await messages.SendMessageAsync(Channel.Group("group-1"),
+            [new FileSegment("https://example.org/report.pdf")]);
+
+        Assert.Equal("direct-media-1", sent.MessageId);
+        Assert.Equal(2, handler.Requests.Count); // token + one direct media POST
+        Assert.EndsWith("/v2/groups/group-1/files", handler.Requests[^1].Uri);
+        var upload = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+        Assert.Equal(4, upload.GetProperty("file_type").GetInt32());
+        Assert.Equal("https://example.org/report.pdf", upload.GetProperty("url").GetString());
+        Assert.Equal("report.pdf", upload.GetProperty("file_name").GetString());
+        Assert.True(upload.GetProperty("srv_send_msg").GetBoolean());
+    }
+
+    [Fact]
+    public async Task QuotedGroupMediaKeepsTwoStepReply()
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
+
+        await messages.SendMessageAsync(Channel.Group("group-1"),
+            [new QuoteSegment("incoming"), new ImageSegment("https://example.org/a.png")]);
+
+        Assert.EndsWith("/v2/groups/group-1/files", handler.Requests[1].Uri);
+        Assert.False(JsonDocument.Parse(handler.Requests[1].Body).RootElement.GetProperty("srv_send_msg").GetBoolean());
+        Assert.EndsWith("/v2/groups/group-1/messages", handler.Requests[2].Uri);
+    }
+
+    [Fact]
+    public async Task RecentGroupMediaUsesReplyInsteadOfProactiveSend()
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
+        messages.RegisterIncoming(new MessageEvent
+        {
+            Platform = "qq-official", MessageId = "incoming", Channel = Channel.Group("group-1"),
+            Sender = new User("user"), Segments = [new TextSegment("ping")]
+        });
+
+        await messages.SendMessageAsync(Channel.Group("group-1"),
+            [new FileSegment("https://example.org/report.pdf")]);
+
+        Assert.False(JsonDocument.Parse(handler.Requests[1].Body).RootElement.GetProperty("srv_send_msg").GetBoolean());
+        var sent = JsonDocument.Parse(handler.Requests[2].Body).RootElement;
+        Assert.Equal("incoming", sent.GetProperty("msg_id").GetString());
+        Assert.Equal("file-1", sent.GetProperty("media").GetProperty("file_info").GetString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LocalGroupFileUsesOfficialChunkedUpload(bool recentReply)
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var bytes = Encoding.ASCII.GetBytes("abcdef");
+            await File.WriteAllBytesAsync(path, bytes);
+            var handler = new FakeHandler();
+            using var http = new HttpClient(handler);
+            var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+            var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
+            if (recentReply)
+                messages.RegisterIncoming(new MessageEvent
+                {
+                    Platform = "qq-official", MessageId = "incoming", Channel = Channel.Group("group-1"),
+                    Sender = new User("user"), Segments = [new TextSegment("ping")]
+                });
+
+            var sent = await messages.SendMessageAsync(Channel.Group("group-1"),
+                [new FileSegment(path) { FileName = "small.bin" }]);
+
+            Assert.Equal(recentReply ? "outgoing-1" : "direct-media-1", sent.MessageId);
+            Assert.Equal(recentReply ? 8 : 7, handler.Requests.Count);
+            Assert.EndsWith("/v2/groups/group-1/upload_prepare", handler.Requests[1].Uri);
+            var prepare = JsonDocument.Parse(handler.Requests[1].Body).RootElement;
+            Assert.Equal("6", prepare.GetProperty("file_size").GetString());
+            Assert.Equal("small.bin", prepare.GetProperty("file_name").GetString());
+            Assert.Equal(Convert.ToHexStringLower(MD5.HashData(bytes)), prepare.GetProperty("md5").GetString());
+            Assert.Equal(Convert.ToHexStringLower(SHA1.HashData(bytes)), prepare.GetProperty("sha1").GetString());
+            Assert.Equal(prepare.GetProperty("md5").GetString(), prepare.GetProperty("md5_10m").GetString());
+            Assert.Equal("abcd", handler.Requests[2].Body);
+            Assert.Null(handler.Requests[2].Authorization);
+            Assert.Equal(1, JsonDocument.Parse(handler.Requests[3].Body).RootElement.GetProperty("part_index").GetInt32());
+            Assert.Equal("ef", handler.Requests[4].Body);
+            Assert.Equal(2, JsonDocument.Parse(handler.Requests[5].Body).RootElement.GetProperty("part_index").GetInt32());
+            var complete = JsonDocument.Parse(handler.Requests[6].Body).RootElement;
+            Assert.Equal("upload-1", complete.GetProperty("upload_id").GetString());
+            Assert.Equal(!recentReply, complete.GetProperty("srv_send_msg").GetBoolean());
+            if (recentReply)
+                Assert.EndsWith("/v2/groups/group-1/messages", handler.Requests[7].Uri);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OfficialMediaCapabilityUploadsStreamAndSends(bool reply)
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        IQOfficialMediaApi media = new QQOfficialMessageService(api, new QQMessageService(api));
+        await using var stream = new MemoryStream(Encoding.ASCII.GetBytes("image"));
+
+        var messageId = await media.UploadAndSendAsync(
+            new QOfficialMessageTarget(QOfficialMessageScene.Group, "group-1"),
+            QOfficialMediaType.Image,
+            stream,
+            "cat.jpg",
+            reply ? new QOfficialMessageReply { MessageId = "incoming" } : null);
+
+        Assert.Equal(reply ? "outgoing-1" : "direct-media-1", messageId);
+        var complete = handler.Requests.Single(request => request.Uri.EndsWith("/files", StringComparison.Ordinal));
+        Assert.Equal(!reply, JsonDocument.Parse(complete.Body).RootElement.GetProperty("srv_send_msg").GetBoolean());
+        if (reply)
+        {
+            var send = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+            Assert.Equal(7, send.GetProperty("msg_type").GetInt32());
+            Assert.Equal("incoming", send.GetProperty("msg_id").GetString());
+            Assert.Equal("file-1", send.GetProperty("media").GetProperty("file_info").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task OfficialMediaCapabilitySendsC2CImageWithCaptionInOneMessage()
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        IQOfficialMessageApi official = new QQOfficialMessageService(api, new QQMessageService(api));
+        await using var stream = new MemoryStream(Encoding.ASCII.GetBytes("image"));
+
+        var messageId = await official.SendAsync(
+            new QOfficialMessageTarget(QOfficialMessageScene.Direct, "user-1"),
+            QOfficialMessage.Media(QOfficialMediaType.Image, stream, "cat.jpg",
+                "图片说明第一行\n图片说明第二行"),
+            new QOfficialMessageReply { MessageId = "incoming" });
+
+        Assert.Equal("outgoing-1", messageId);
+        Assert.Contains(handler.Requests, request => request.Uri.EndsWith("/v2/users/user-1/upload_prepare"));
+        var send = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+        Assert.EndsWith("/v2/users/user-1/messages", handler.Requests[^1].Uri);
+        Assert.Equal(7, send.GetProperty("msg_type").GetInt32());
+        Assert.Equal("incoming", send.GetProperty("msg_id").GetString());
+        Assert.Equal("图片说明第一行\n图片说明第二行", send.GetProperty("content").GetString());
+        Assert.Equal("file-1", send.GetProperty("media").GetProperty("file_info").GetString());
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 2)]
+    public async Task UnifiedOfficialMessageDispatchesTextAndMarkdown(bool markdown, int expectedType)
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        IQOfficialMessageApi official = new QQOfficialMessageService(api, new QQMessageService(api));
+        var target = new QOfficialMessageTarget(QOfficialMessageScene.Direct, "user-1");
+        QOfficialMessage message = markdown
+            ? QOfficialMessage.Markdown(new QCustomMarkdown("# hello"), new QKeyboardTemplate("keyboard-1"))
+            : QOfficialMessage.Text("hello");
+
+        await official.SendAsync(target, message, new QOfficialMessageReply { MessageId = "incoming" });
+
+        var sent = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+        Assert.Equal(expectedType, sent.GetProperty("msg_type").GetInt32());
+        Assert.Equal("incoming", sent.GetProperty("msg_id").GetString());
+        Assert.Equal(markdown ? "# hello" : "hello",
+            markdown ? sent.GetProperty("markdown").GetProperty("content").GetString()
+                : sent.GetProperty("content").GetString());
+        if (markdown)
+            Assert.Equal("keyboard-1", sent.GetProperty("keyboard").GetProperty("id").GetString());
+    }
+
     [Fact]
     public async Task TokenErrorReportsTencentCodeWithoutLeakingSecret()
     {
@@ -425,8 +689,14 @@ public sealed class AdapterTests
                     ? """{"err_code":40034005,"message":"msg_id expired","trace_id":"trace-1"}"""
                 : request.RequestUri.AbsolutePath.EndsWith("/info")
                     ? """{"group_openid":"group-1","group_name":"测试群"}"""
+                : request.RequestUri.AbsolutePath.EndsWith("/upload_prepare")
+                    ? """{"upload_id":"upload-1","block_size":"4","parts":[{"index":1,"presigned_url":"https://upload.example/part/1"},{"index":2,"presigned_url":"https://upload.example/part/2"}]}"""
+                : request.RequestUri.AbsolutePath.EndsWith("/upload_part_finish")
+                    ? "{}"
                 : request.RequestUri.AbsolutePath.EndsWith("/files")
-                    ? """{"file_info":"file-1"}"""
+                    ? body.Contains("\"srv_send_msg\":true", StringComparison.Ordinal)
+                        ? """{"file_info":"file-1","id":"direct-media-1"}"""
+                        : """{"file_info":"file-1"}"""
                     : """{"id":"outgoing-1","timestamp":1767225600}""";
             return new HttpResponseMessage(request.RequestUri.AbsolutePath != "/app/getAppAccessToken" && OpenApiErrorStatus is { } errorStatus
                 ? errorStatus : HttpStatusCode.OK) { Content = new StringContent(response) };

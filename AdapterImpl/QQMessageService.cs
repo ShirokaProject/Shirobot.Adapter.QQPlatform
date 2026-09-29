@@ -55,7 +55,7 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         var quotes = segments.OfType<QuoteSegment>().ToArray();
         if (quotes.Length > 1 || quotes.Length == 1 && string.IsNullOrWhiteSpace(quotes[0].MessageId))
             throw new ArgumentException("QQ Official replies accept at most one valid QuoteSegment.", nameof(segments));
-        var replyToMessageId = quotes.Length == 1 ? quotes[0].MessageId : RecentMessageId(channel);
+        var replyToMessageId = quotes.Length == 1 ? quotes[0].MessageId : TryRecentMessageId(channel);
 
         var content = new StringBuilder();
         var displayContent = new StringBuilder();
@@ -88,21 +88,55 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
                     content.Append(emojiText);
                     displayContent.Append(emojiText);
                     break;
-                case ImageSegment image when resource is null: resource = image; break;
-                case ResourceSegment: throw new NotSupportedException("QQ Official supports one remote image per message in this adapter version.");
+                case ResourceSegment media when resource is null: resource = media; break;
+                case ResourceSegment: throw new NotSupportedException("QQ Official supports one media resource per message.");
                 default: throw new NotSupportedException($"QQ Official cannot send segment {segment.GetType().Name}.");
             }
         }
 
         QQSendRequest request;
-        if (resource is ImageSegment imageSegment)
+        if (resource is not null)
         {
             if (content.Length > 0)
-                throw new NotSupportedException("QQ Official image and text must be sent as separate replies.");
-            if (!Uri.TryCreate(imageSegment.Uri, UriKind.Absolute, out var url) || url.Scheme is not ("http" or "https"))
-                throw new NotSupportedException("QQ Official image upload currently requires an HTTP(S) URL.");
-            var fileInfo = await api.UploadRemoteAsync(channel, 1, url).ConfigureAwait(false);
-            request = new QQSendRequest { MessageType = 7, Content = " ", Media = new QQMedia(fileInfo) };
+                throw new NotSupportedException("QQ Official media and text must be sent as separate messages.");
+            Uri.TryCreate(resource.Uri, UriKind.Absolute, out var sourceUri);
+            var url = sourceUri?.Scheme is "http" or "https" ? sourceUri : null;
+            var path = Path.IsPathFullyQualified(resource.Uri) ? resource.Uri
+                : sourceUri?.Scheme == Uri.UriSchemeFile ? sourceUri.LocalPath
+                : sourceUri is null ? Path.GetFullPath(resource.Uri) : null;
+            if (url is null && path is null)
+                throw new NotSupportedException("QQ Official media source must be an HTTP(S) URL or a local file path.");
+            var fileType = resource switch
+            {
+                ImageSegment => 1,
+                VideoSegment => 2,
+                AudioSegment => 3,
+                FileSegment => 4,
+                _ => throw new NotSupportedException($"QQ Official cannot send resource {resource.GetType().Name}.")
+            };
+            var fileName = resource.FileName ?? (path is not null
+                ? Path.GetFileName(path)
+                : Uri.UnescapeDataString(Path.GetFileName(url!.AbsolutePath)));
+            if (channel.Type == ChannelType.Group && replyToMessageId is null && content.Length == 0)
+            {
+                var sent = path is not null
+                    ? await api.SendLocalAsync(channel, fileType, path, fileName).ConfigureAwait(false)
+                    : await api.SendRemoteAsync(channel, fileType, url!,
+                        resource is FileSegment ? fileName : null).ConfigureAwait(false);
+                var target = string.IsNullOrWhiteSpace(channel.Name) ? channel.Id : channel.Name;
+                logger?.Info($"已发送群消息到 {target}: [{resource.GetType().Name}]");
+                return sent;
+            }
+            var fileInfo = path is not null
+                ? await api.UploadLocalAsync(channel, fileType, path, fileName).ConfigureAwait(false)
+                : await api.UploadRemoteAsync(channel, fileType, url!,
+                    resource is FileSegment ? fileName : null).ConfigureAwait(false);
+            request = new QQSendRequest
+            {
+                MessageType = 7,
+                Content = content.Length > 0 ? content.ToString() : " ",
+                Media = new QQMedia(fileInfo)
+            };
         }
         else
         {
@@ -113,8 +147,10 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         }
         if (quotes.Length == 1 && GetReferenceIndex(channel, quotes[0].MessageId) is { } referenceIndex)
             request = request with { MessageReference = new QQMessageReference(referenceIndex) };
+        if (replyToMessageId is null)
+            throw new InvalidOperationException("QQ Official requires a recent incoming message in this channel or an explicit QuoteSegment.");
         return await SendAndLogAsync(channel, WithReply(request, replyToMessageId),
-            resource is null ? displayContent.ToString() : "[图片]").ConfigureAwait(false);
+            resource is null ? displayContent.ToString() : $"[{resource.GetType().Name}]").ConfigureAwait(false);
     }
 
     public Task DeleteMessageAsync(Channel channel, string messageId) => api.DeleteMessageAsync(channel, messageId);
@@ -169,6 +205,24 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
         return SendAndLogAsync(channel, request, description);
     }
 
+    internal async Task<SentMessage> SendOfficialAsync(string route, string targetName, QQSendRequest request,
+        QOfficialMessageReply? reply, string description)
+    {
+        if (reply is not null)
+        {
+            var hasMessage = !string.IsNullOrWhiteSpace(reply.MessageId);
+            var hasEvent = !string.IsNullOrWhiteSpace(reply.EventId);
+            if (hasMessage == hasEvent || reply.MessageSequence is <= 0
+                || !hasMessage && reply.MessageSequence is not null)
+                throw new ArgumentException("QQ official reply needs one message or event ID and a positive sequence.", nameof(reply));
+            if (hasMessage) request = WithReply(request, $"{route}:{reply.MessageId}", reply.MessageId!, reply.MessageSequence);
+            else request = request with { EventId = reply.EventId, MessageSequence = reply.MessageSequence };
+        }
+        var sent = await api.SendMessageAsync(route, request).ConfigureAwait(false);
+        logger?.Info($"已发送 QQ 官方消息到 {targetName}: {description.Replace("\r", "\\r").Replace("\n", "\\n")}");
+        return sent;
+    }
+
     private async Task<SentMessage> SendAndLogAsync(Channel channel, QQSendRequest request, string description)
     {
         var sent = await api.SendMessageAsync(channel, request).ConfigureAwait(false);
@@ -179,29 +233,33 @@ internal sealed class QQMessageService(QQOpenApiClient api, IConsoleLogger? logg
     }
 
     private QQSendRequest WithReply(QQSendRequest request, string replyToMessageId, int? explicitSequence = null)
+        => WithReply(request, replyToMessageId, replyToMessageId, explicitSequence);
+
+    private QQSendRequest WithReply(QQSendRequest request, string sequenceKey, string replyToMessageId,
+        int? explicitSequence = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(replyToMessageId);
         lock (_sequences)
         {
-            var hasPrevious = _sequences.TryGetValue(replyToMessageId, out var previous);
+            var hasPrevious = _sequences.TryGetValue(sequenceKey, out var previous);
             var sequence = explicitSequence ?? (hasPrevious ? checked(previous + 1) : 1);
             if (hasPrevious && sequence <= previous)
                 throw new ArgumentException("QQ reply sequence must increase for each source message.", nameof(explicitSequence));
-            if (!hasPrevious) _sequenceOrder.Enqueue(replyToMessageId);
-            _sequences[replyToMessageId] = sequence;
+            if (!hasPrevious) _sequenceOrder.Enqueue(sequenceKey);
+            _sequences[sequenceKey] = sequence;
             while (_sequenceOrder.Count > 4096) _sequences.Remove(_sequenceOrder.Dequeue());
             return request with { MessageId = replyToMessageId, MessageSequence = sequence };
         }
     }
 
-    private string RecentMessageId(Channel channel)
+    private string? TryRecentMessageId(Channel channel)
     {
         lock (_recent)
         {
             if (_recent.TryGetValue(ChannelKey(channel), out var entry)
                 && DateTimeOffset.UtcNow - entry.SeenAt < TimeSpan.FromMinutes(5)) return entry.MessageId;
         }
-        throw new InvalidOperationException("QQ Official requires a recent incoming message in this channel or an explicit QuoteSegment.");
+        return null;
     }
 
     private static string ChannelKey(Channel channel) => $"{(int)channel.Type}:{channel.Id}";

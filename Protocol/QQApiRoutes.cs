@@ -1,4 +1,5 @@
 using ShiroBot.SDK.Models;
+using ShiroBot.Model.QQ;
 
 namespace ShiroBot.Adapter.QQPlatform.Protocol;
 
@@ -8,7 +9,23 @@ internal static class QQApiRoutes
     public const string Gateway = "gateway/bot";
 
     public static string Messages(Channel channel) => ForChannel(channel, "messages");
+    public static string Messages(QOfficialMessageTarget target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentException.ThrowIfNullOrWhiteSpace(target.Id);
+        var id = Uri.EscapeDataString(target.Id);
+        return target.Scene switch
+        {
+            QOfficialMessageScene.Direct => $"v2/users/{id}/messages",
+            QOfficialMessageScene.Group => $"v2/groups/{id}/messages",
+            QOfficialMessageScene.Channel => $"channels/{id}/messages",
+            QOfficialMessageScene.ChannelDirect => $"dms/{id}/messages",
+            _ => throw new ArgumentOutOfRangeException(nameof(target))
+        };
+    }
     public static string Files(Channel channel) => ForChannel(channel, "files");
+    public static string UploadPrepare(Channel channel) => ForChannel(channel, "upload_prepare");
+    public static string UploadPartFinish(Channel channel) => ForChannel(channel, "upload_part_finish");
     public static string StreamMessages(Channel channel)
     {
         if (channel.Type != ChannelType.Direct)
