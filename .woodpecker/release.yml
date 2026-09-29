@@ -48,8 +48,6 @@ steps:
         mkdir -p "$package_dir"
         cp artifacts/publish/qq-official/ShiroBot.Adapter.QQPlatform.dll "$package_dir/"
         (cd "$package_dir" && sha256sum ShiroBot.Adapter.QQPlatform.dll > ShiroBot.Adapter.QQPlatform.dll.sha256)
-        archive="$package_dir/ShiroBot.Adapter.QQPlatform-$release_tag.tar.gz"
-        tar -C "$package_dir" -czf "$archive" ShiroBot.Adapter.QQPlatform.dll ShiroBot.Adapter.QQPlatform.dll.sha256
 
         api_root="https://git.oeo.one/api/v1/repos/justme/Shirobot.Adapter.QQPlatform"
         if ! release_json="$(curl -fsS -H "Authorization: token $GITEA_RELEASE_TOKEN" "$api_root/releases/tags/$release_tag" 2>/dev/null)"; then
@@ -57,12 +55,12 @@ steps:
           release_json="$(curl -fsS -X POST "$api_root/releases" \
             -H "Authorization: token $GITEA_RELEASE_TOKEN" \
             -H 'Content-Type: application/json' \
-            -d "{\"tag_name\":\"$release_tag\",\"target_commitish\":\"$release_commit\",\"name\":\"$release_tag\",\"body\":\"QQPlatform adapter $release_tag. Download the plugin archive and verify it with the accompanying SHA-256 file. OCI artifact: registry.oeo.one/justme/shirobot-adapter-qqplatform:$release_tag\"}")"
+            -d "{\"tag_name\":\"$release_tag\",\"target_commitish\":\"$release_commit\",\"name\":\"$release_tag\",\"body\":\"QQPlatform adapter $release_tag. Download ShiroBot.Adapter.QQPlatform.dll and verify it with the accompanying SHA-256 file. OCI artifact: registry.oeo.one/justme/shirobot-adapter-qqplatform:$release_tag\"}")"
         fi
         release_id="$(printf '%s\n' "$release_json" | tr ',' '\n' | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)"
         test -n "$release_id"
         release_assets="$(curl -fsS -H "Authorization: token $GITEA_RELEASE_TOKEN" "$api_root/releases/$release_id/assets")"
-        for file in "$archive" "$package_dir/ShiroBot.Adapter.QQPlatform.dll.sha256"; do
+        for file in "$package_dir/ShiroBot.Adapter.QQPlatform.dll" "$package_dir/ShiroBot.Adapter.QQPlatform.dll.sha256"; do
           asset_name="$(basename "$file")"
           if printf '%s' "$release_assets" | tr -d '[:space:]' | grep -Fq "\"name\":\"$asset_name\""; then
             continue
@@ -79,5 +77,5 @@ steps:
         printf '%s' "$ZOT_PASSWORD" | "$tool_dir/oras" login --registry-config "$tool_dir/auth.json" registry.oeo.one -u "$ZOT_USERNAME" --password-stdin
         "$tool_dir/oras" push --registry-config "$tool_dir/auth.json" --artifact-type application/vnd.shiro.bot.qqplatform-adapter.v1 \
           "registry.oeo.one/justme/shirobot-adapter-qqplatform:$release_tag" \
-          "$archive:application/gzip" \
+          "$package_dir/ShiroBot.Adapter.QQPlatform.dll:application/octet-stream" \
           "$package_dir/ShiroBot.Adapter.QQPlatform.dll.sha256:text/plain"
