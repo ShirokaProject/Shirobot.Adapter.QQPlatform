@@ -31,7 +31,7 @@ steps:
 
         git init .
         git remote add origin https://git.oeo.one/justme/Shirobot.Adapter.QQPlatform.git
-        git fetch --depth=1 origin "refs/tags/${release_tag}"
+        git fetch --depth=1 origin "refs/tags/$release_tag"
         git checkout --detach FETCH_HEAD
 
         mkdir -p ../Shirobot
@@ -48,7 +48,7 @@ steps:
         mkdir -p "$package_dir"
         cp artifacts/publish/qq-official/ShiroBot.Adapter.QQPlatform.dll "$package_dir/"
         (cd "$package_dir" && sha256sum ShiroBot.Adapter.QQPlatform.dll > ShiroBot.Adapter.QQPlatform.dll.sha256)
-        archive="$package_dir/ShiroBot.Adapter.QQPlatform-${release_tag}.tar.gz"
+        archive="$package_dir/ShiroBot.Adapter.QQPlatform-$release_tag.tar.gz"
         tar -C "$package_dir" -czf "$archive" ShiroBot.Adapter.QQPlatform.dll ShiroBot.Adapter.QQPlatform.dll.sha256
 
         api_root="https://git.oeo.one/api/v1/repos/justme/Shirobot.Adapter.QQPlatform"
@@ -78,6 +78,6 @@ steps:
         tar -xzf "$tool_dir/oras.tgz" -C "$tool_dir" oras
         printf '%s' "$ZOT_PASSWORD" | "$tool_dir/oras" login --registry-config "$tool_dir/auth.json" registry.oeo.one -u "$ZOT_USERNAME" --password-stdin
         "$tool_dir/oras" push --registry-config "$tool_dir/auth.json" --artifact-type application/vnd.shiro.bot.qqplatform-adapter.v1 \
-          "registry.oeo.one/justme/shirobot-adapter-qqplatform:${release_tag}" \
+          "registry.oeo.one/justme/shirobot-adapter-qqplatform:$release_tag" \
           "$archive:application/gzip" \
           "$package_dir/ShiroBot.Adapter.QQPlatform.dll.sha256:text/plain"
