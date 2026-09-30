@@ -10,7 +10,7 @@ using ShiroBot.SDK.Core;
 using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
 
-[assembly: ShiroBotApiCompatibility("0.9", "0.9")]
+[assembly: ShiroBotApiCompatibility("0.9.1", "0.9.1")]
 [assembly: RequiresShiroBotPackage("shirobot.model.qq", MinimumVersion = "0.9.2")]
 
 namespace ShiroBot.Adapter.QQPlatform;
