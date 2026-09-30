@@ -1,0 +1,73 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag to release (e.g. v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - name: Resolve tag
+        run: |
+          set -eu
+          case "$RELEASE_TAG" in
+            v[0-9]*) ;;
+            *) echo "Expected a v-prefixed semantic version, got: $RELEASE_TAG" >&2; exit 1 ;;
+          esac
+
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Checkout Shirobot sources
+        run: |
+          mkdir -p ../Shirobot
+          git -C ../Shirobot init
+          git -C ../Shirobot remote add origin https://git.oeo.one/justme/Shirobot.git
+          git -C ../Shirobot fetch --depth=1 origin master
+          git -C ../Shirobot checkout --detach FETCH_HEAD
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build and test
+        run: |
+          dotnet build ShiroBot.Adapter.QQPlatform.sln -c Release
+          dotnet test tests/ShiroBot.QQPlatform.Tests/ShiroBot.QQPlatform.Tests.csproj -c Release --no-build
+          dotnet publish ShiroBot.Adapter.QQPlatform.csproj -c Release -o artifacts/publish/qq-official
+
+      - name: Package
+        run: |
+          set -eu
+          package_dir="artifacts/release"
+          mkdir -p "$package_dir"
+          cp artifacts/publish/qq-official/ShiroBot.Adapter.QQPlatform.dll "$package_dir/"
+          (cd "$package_dir" && sha256sum ShiroBot.Adapter.QQPlatform.dll > ShiroBot.Adapter.QQPlatform.dll.sha256)
+
+      - name: Create GitHub release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release view "$RELEASE_TAG" || gh release create "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
+            --notes "QQPlatform adapter $RELEASE_TAG. Download ShiroBot.Adapter.QQPlatform.dll and verify it with the accompanying SHA-256 file."
+          gh release upload "$RELEASE_TAG" \
+            artifacts/release/ShiroBot.Adapter.QQPlatform.dll \
+            artifacts/release/ShiroBot.Adapter.QQPlatform.dll.sha256 --clobber
