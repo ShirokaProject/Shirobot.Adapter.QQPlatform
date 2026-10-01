@@ -15,7 +15,7 @@ using ShiroBot.SDK.Plugin;
 
 namespace ShiroBot.Adapter.QQPlatform;
 
-[BotAdapter("qq-official", Name = "QQPlatformAdapter", Version = "0.2.0",
+[BotAdapter("qq-official", Name = "QQPlatformAdapter", Version = "0.2.1",
     Description = "QQ Official Bot OpenAPI adapter", Author = "ShirokaProject",
     Protocol = "qq-official", IsSingleFile = true)]
 public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConfigurableComponent<QQPlatformConfig>
