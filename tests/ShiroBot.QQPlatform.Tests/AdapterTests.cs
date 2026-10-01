@@ -48,9 +48,9 @@ public sealed class AdapterTests
     }
 
     [Fact]
-    public async Task GroupMessageWithBotMentionMetadataTriggersMentionRoute()
+    public async Task GroupMessageWithSelfMentionMetadataTriggersMentionRoute()
     {
-        var data = JsonDocument.Parse("""{"id":"message-mention-metadata","group_openid":"group-1","author":{"member_openid":"member-1"},"content":"你好","mentions":[{"member_openid":"bot-member-openid","bot":true}]}""").RootElement;
+        var data = JsonDocument.Parse("""{"id":"message-mention-metadata","group_openid":"group-1","author":{"member_openid":"member-1"},"content":"你好","mentions":[{"member_openid":"bot-user-openid","bot":true}]}""").RootElement;
         var message = Assert.IsType<MessageEvent>(QQEventTranslator.Translate(
             new GatewayPayload(0, data, 3, "GROUP_MESSAGE_CREATE", "evt-mention-metadata"),
             "bot-user-openid", "测试机器人"));
@@ -66,6 +66,28 @@ public sealed class AdapterTests
 
         Assert.True(await router.DispatchAsync(message.GetPlainText().Trim(), message));
         Assert.True(called);
+    }
+
+    [Fact]
+    public async Task MentioningAnotherBotDoesNotTriggerThisBotsMentionRoute()
+    {
+        var data = JsonDocument.Parse("""{"id":"message-other-bot-mention","group_openid":"group-1","author":{"member_openid":"member-1"},"content":"<@other-bot-member> 你好","mentions":[{"member_openid":"other-bot-member","bot":true}]}""").RootElement;
+        var message = Assert.IsType<MessageEvent>(QQEventTranslator.Translate(
+            new GatewayPayload(0, data, 4, "GROUP_MESSAGE_CREATE", "evt-other-bot-mention"),
+            "bot-user-openid", "测试机器人"));
+
+        Assert.True(message.HasMention("other-bot-member"));
+        Assert.False(message.HasMention("bot-user-openid"));
+        var called = false;
+        var router = new CommandRouter<MessageEvent>();
+        router.MapMention("bot-user-openid", _ =>
+        {
+            called = true;
+            return Task.CompletedTask;
+        });
+
+        Assert.False(await router.DispatchAsync(message.GetPlainText().Trim(), message));
+        Assert.False(called);
     }
 
     [Fact]
