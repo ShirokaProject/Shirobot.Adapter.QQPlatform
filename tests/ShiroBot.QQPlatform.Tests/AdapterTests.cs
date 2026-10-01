@@ -48,6 +48,27 @@ public sealed class AdapterTests
     }
 
     [Fact]
+    public async Task GroupMessageWithBotMentionMetadataTriggersMentionRoute()
+    {
+        var data = JsonDocument.Parse("""{"id":"message-mention-metadata","group_openid":"group-1","author":{"member_openid":"member-1"},"content":"你好","mentions":[{"member_openid":"bot-member-openid","bot":true}]}""").RootElement;
+        var message = Assert.IsType<MessageEvent>(QQEventTranslator.Translate(
+            new GatewayPayload(0, data, 3, "GROUP_MESSAGE_CREATE", "evt-mention-metadata"),
+            "bot-user-openid", "测试机器人"));
+
+        Assert.True(message.HasMention("bot-user-openid"));
+        var called = false;
+        var router = new CommandRouter<MessageEvent>();
+        router.MapMention("bot-user-openid", _ =>
+        {
+            called = true;
+            return Task.CompletedTask;
+        });
+
+        Assert.True(await router.DispatchAsync(message.GetPlainText().Trim(), message));
+        Assert.True(called);
+    }
+
+    [Fact]
     public void GroupMessageMapsRoleAndMentionDisplayNameWithoutChangingOpenIds()
     {
         var data = JsonDocument.Parse("""{"id":"message-3","group_openid":"group-openid","author":{"member_openid":"sender-openid","username":"小明","member_role":"admin","union_openid":"union-openid"},"mentions":[{"member_openid":"target-openid","username":"小红"}],"content":"<@target-openid> 你好"}""").RootElement;

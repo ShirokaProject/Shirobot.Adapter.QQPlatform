@@ -68,7 +68,12 @@ internal static class QQEventTranslator
                 .GroupBy(mention => mention.Id!, StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => group.First().Username!, StringComparer.Ordinal);
             segments.AddRange(QQContentParser.Parse(message.Content, mentionNames));
-            if (type == "GROUP_AT_MESSAGE_CREATE" && !string.IsNullOrWhiteSpace(selfId))
+            var mentionsBot = type == "GROUP_AT_MESSAGE_CREATE"
+                || (message.Mentions ?? []).Any(mention => mention.Bot
+                    || string.Equals(mention.MemberOpenId, selfId, StringComparison.Ordinal)
+                    || string.Equals(mention.UserOpenId, selfId, StringComparison.Ordinal)
+                    || string.Equals(mention.Id, selfId, StringComparison.Ordinal));
+            if (isGroup && mentionsBot && !string.IsNullOrWhiteSpace(selfId))
             {
                 var botName = string.IsNullOrWhiteSpace(selfName) ? "机器人" : selfName;
                 var selfMention = segments.OfType<MentionSegment>()
