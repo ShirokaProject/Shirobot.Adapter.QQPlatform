@@ -7,6 +7,7 @@ namespace ShiroBot.Adapter.QQPlatform.Protocol;
 internal static class QQApiRoutes
 {
     public const string Gateway = "gateway/bot";
+    public const string CurrentUser = "users/@me";
 
     public static string Messages(Channel channel) => ForChannel(channel, "messages");
     public static string Messages(QOfficialMessageTarget target)

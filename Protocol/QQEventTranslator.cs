@@ -68,22 +68,37 @@ internal static class QQEventTranslator
                 .GroupBy(mention => mention.Id!, StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => group.First().Username!, StringComparer.Ordinal);
             segments.AddRange(QQContentParser.Parse(message.Content, mentionNames));
-            var mentionsBot = type == "GROUP_AT_MESSAGE_CREATE"
-                || (!string.IsNullOrWhiteSpace(selfId) && (message.Mentions ?? []).Any(mention =>
-                    string.Equals(mention.MemberOpenId, selfId, StringComparison.Ordinal)
-                    || string.Equals(mention.UserOpenId, selfId, StringComparison.Ordinal)
-                    || string.Equals(mention.Id, selfId, StringComparison.Ordinal)));
+            var selfMentionIds = new HashSet<string>(StringComparer.Ordinal);
+            var mentionsBot = type == "GROUP_AT_MESSAGE_CREATE";
+            if (!string.IsNullOrWhiteSpace(selfId))
+            {
+                foreach (var mention in message.Mentions ?? [])
+                {
+                    var matchesSelf = string.Equals(mention.MemberOpenId, selfId, StringComparison.Ordinal)
+                        || string.Equals(mention.UserOpenId, selfId, StringComparison.Ordinal)
+                        || string.Equals(mention.Id, selfId, StringComparison.Ordinal)
+                        || (mention.Bot && !string.IsNullOrWhiteSpace(selfName)
+                            && string.Equals(mention.Username, selfName, StringComparison.Ordinal));
+                    if (!matchesSelf) continue;
+
+                    mentionsBot = true;
+                    AddMentionId(selfMentionIds, mention.MemberOpenId);
+                    AddMentionId(selfMentionIds, mention.UserOpenId);
+                    AddMentionId(selfMentionIds, mention.Id);
+                }
+            }
             if (isGroup && mentionsBot && !string.IsNullOrWhiteSpace(selfId))
             {
                 var botName = string.IsNullOrWhiteSpace(selfName) ? "机器人" : selfName;
-                var selfMention = segments.OfType<MentionSegment>()
-                    .FirstOrDefault(mention => mention.UserId == selfId);
-                if (selfMention is null)
+                var selfMentionIndex = segments.FindIndex(segment => segment is MentionSegment mention
+                    && (mention.UserId == selfId || selfMentionIds.Contains(mention.UserId)));
+                if (selfMentionIndex < 0)
                     segments.Insert(0, new MentionSegment(selfId) { DisplayName = botName });
-                else if (string.IsNullOrWhiteSpace(selfMention.DisplayName))
+                else
                 {
-                    var index = segments.IndexOf(selfMention);
-                    segments[index] = selfMention with { DisplayName = botName };
+                    var selfMention = (MentionSegment)segments[selfMentionIndex];
+                    if (selfMention.UserId != selfId || string.IsNullOrWhiteSpace(selfMention.DisplayName))
+                        segments[selfMentionIndex] = selfMention with { UserId = selfId, DisplayName = botName };
                 }
             }
             foreach (var attachment in message.Attachments ?? [])
@@ -116,5 +131,10 @@ internal static class QQEventTranslator
         }
         if (type is "READY" or "RESUMED") return null;
         return new PlatformEvent { Platform = Platform, SelfId = selfId, Raw = raw, Kind = type.ToLowerInvariant() };
+    }
+
+    private static void AddMentionId(HashSet<string> mentions, string? id)
+    {
+        if (!string.IsNullOrWhiteSpace(id)) mentions.Add(id);
     }
 }

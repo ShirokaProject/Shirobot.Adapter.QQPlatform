@@ -31,6 +31,14 @@ internal sealed class QQOpenApiClient
         return uri;
     }
 
+    public async Task<QQUser> GetCurrentUserAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await _transport.SendAsync(HttpMethod.Get, QQApiRoutes.CurrentUser, null, cancellationToken)
+            .ConfigureAwait(false);
+        return await response.Content.ReadFromJsonAsync<QQUser>(cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("QQ current-user response is empty.");
+    }
+
     public async Task<SentMessage> SendMessageAsync(Channel channel, QQSendRequest message, CancellationToken cancellationToken = default)
         => await SendMessageAsync(QQApiRoutes.Messages(channel), message, cancellationToken).ConfigureAwait(false);
 

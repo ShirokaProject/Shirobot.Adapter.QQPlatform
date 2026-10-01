@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using ShiroBot.Adapter.QQPlatform.AdapterImpl;
 using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
@@ -65,13 +66,35 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
         var tokens = new QQTokenProvider(_http, config);
         var api = new QQOpenApiClient(_http, config, tokens, _uploadHttp);
         _api = api;
+        try
+        {
+            var bot = await api.GetCurrentUserAsync().ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(bot.Id))
+            {
+                _selfId = bot.Id;
+                _users.Self = new User(bot.Id) { Name = bot.Username, IsBot = true };
+            }
+            Logger.Info($"QQ Official bot identity: id={bot.Id ?? "<missing>"}, " +
+                $"username={bot.Username ?? "<missing>"}, bot={bot.Bot}");
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Logger.Warning($"QQ Official /users/@me lookup failed ({ex.GetType().Name}); " +
+                "will use the Gateway READY identity.");
+        }
         _messages = new QQMessageService(api, Logger);
         _officialMessages = new QQOfficialMessageService(api, _messages, Logger, GetCachedGroupName);
         _gateway = new QQGatewayClient(config, api, tokens, DispatchAsync, user =>
         {
-            _selfId = user?.Id;
-            if (!string.IsNullOrWhiteSpace(_selfId))
-                _users.Self = new User(_selfId) { Name = user?.Username, IsBot = true };
+            if (!string.IsNullOrWhiteSpace(user?.Id))
+            {
+                var identityWasMissing = string.IsNullOrWhiteSpace(_selfId);
+                _selfId = user.Id;
+                _users.Self = new User(_selfId) { Name = user.Username ?? _users.Self?.Name, IsBot = true };
+                if (identityWasMissing)
+                    Logger.Info($"QQ Official bot identity from Gateway READY: id={user.Id}, " +
+                        $"username={user.Username ?? "<missing>"}, bot={user.Bot}");
+            }
         }, Logger);
         try { await _gateway.StartAsync().ConfigureAwait(false); }
         catch { await StopAsync().ConfigureAwait(false); throw; }
@@ -157,6 +180,7 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
             }
             if (translated is MessageEvent { IsDirect: false } groupMessage)
             {
+                LogMentionDiagnostics(payload, groupMessage);
                 var name = await GetGroupNameAsync(groupMessage.Channel.Id).ConfigureAwait(false);
                 if (!string.IsNullOrWhiteSpace(name))
                     translated = groupMessage with { Channel = groupMessage.Channel with { Name = name } };
@@ -168,6 +192,51 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
         {
             Logger.Error($"QQ Official event {payload.EventType} failed: {ex.Message}");
         }
+    }
+
+    private void LogMentionDiagnostics(GatewayPayload payload, MessageEvent message)
+    {
+        var mentionCount = 0;
+        var botMentionCount = 0;
+        if (payload.Data.ValueKind == JsonValueKind.Object
+            && payload.Data.TryGetProperty("mentions", out var mentions)
+            && mentions.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var mention in mentions.EnumerateArray())
+            {
+                mentionCount++;
+                if (mention.ValueKind == JsonValueKind.Object
+                    && mention.TryGetProperty("bot", out var bot)
+                    && bot.ValueKind == JsonValueKind.True)
+                    botMentionCount++;
+            }
+        }
+
+        var mentionSegments = message.Segments.OfType<MentionSegment>().Count();
+        var selfName = _users.Self?.Name;
+        var botNameMatches = 0;
+        if (!string.IsNullOrWhiteSpace(selfName)
+            && payload.Data.ValueKind == JsonValueKind.Object
+            && payload.Data.TryGetProperty("mentions", out var mentionUsers)
+            && mentionUsers.ValueKind == JsonValueKind.Array)
+        {
+            botNameMatches = mentionUsers.EnumerateArray().Count(mention =>
+                mention.ValueKind == JsonValueKind.Object
+                && mention.TryGetProperty("bot", out var bot)
+                && bot.ValueKind == JsonValueKind.True
+                && mention.TryGetProperty("username", out var username)
+                && username.ValueKind == JsonValueKind.String
+                && string.Equals(username.GetString(), selfName, StringComparison.Ordinal));
+        }
+        if (payload.EventType != "GROUP_AT_MESSAGE_CREATE" && mentionCount == 0 && mentionSegments == 0)
+            return;
+
+        var selfIdReady = !string.IsNullOrWhiteSpace(_selfId);
+        var selfMentioned = selfIdReady && message.HasMention(_selfId!);
+        Logger.Info($"QQ Official @ diagnostic: event={payload.EventType}, selfIdReady={selfIdReady}, " +
+            $"selfMentioned={selfMentioned}, mentionMetadata={mentionCount}, botMetadata={botMentionCount}, " +
+            $"botNameMatches={botNameMatches}, " +
+            $"mentionSegments={mentionSegments}");
     }
 
     private async Task<string?> GetGroupNameAsync(string groupOpenId)
