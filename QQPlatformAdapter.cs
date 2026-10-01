@@ -18,7 +18,7 @@ namespace ShiroBot.Adapter.QQPlatform;
 [BotAdapter("qq-official", Name = "QQPlatformAdapter", Version = "0.2.0",
     Description = "QQ Official Bot OpenAPI adapter", Author = "ShirokaProject",
     Protocol = "qq-official", IsSingleFile = true)]
-public sealed class QQPlatformAdapter : IBotAdapter
+public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConfigurableComponent<QQPlatformConfig>
 {
     private readonly QQEventService _events = new();
     private readonly QQUserService _users = new();
@@ -34,6 +34,10 @@ public sealed class QQPlatformAdapter : IBotAdapter
     private QQOpenApiClient? _api;
     private string? _selfId;
     private QQPlatformConfig? _config;
+
+    public QQPlatformConfig CurrentConfigValue { get; private set; } = new();
+
+    ConfigApplyMode IConfigurableAdapter.ApplyMode => ConfigApplyMode.RestartComponent;
 
     public string Platform => QQEventTranslator.Platform;
     public IConfigContext Config { get; set; } = null!;
@@ -53,14 +57,7 @@ public sealed class QQPlatformAdapter : IBotAdapter
             .GetCustomAttributes<AssemblyMetadataAttribute>()
             .FirstOrDefault(attribute => attribute.Key == "BuildTimeUtc")?.Value;
         Logger.Info($"QQ Official Adapter build time (UTC): {buildTime ?? "unknown"}");
-        var config = Config.Load<QQPlatformConfig>();
-        var configChanged = config.NormalizeLegacyTokenEndpoint();
-        if (config.Intents == 1UL << 25)
-        {
-            config.Intents |= 1UL << 26;
-            configChanged = true;
-        }
-        if (configChanged) Config.Save(config);
+        var config = CurrentConfigValue;
         config.Validate();
         _config = config;
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
@@ -79,6 +76,38 @@ public sealed class QQPlatformAdapter : IBotAdapter
         try { await _gateway.StartAsync().ConfigureAwait(false); }
         catch { await StopAsync().ConfigureAwait(false); throw; }
         Logger.Success("QQ Official gateway connected.");
+    }
+
+    public Task OnConfigLoadedAsync(QQPlatformConfig config, CancellationToken cancellationToken)
+    {
+        NormalizeConfig(config);
+        config.Validate();
+        CurrentConfigValue = config;
+        _config = config;
+        return Task.CompletedTask;
+    }
+
+    public Task OnConfigChangedAsync(
+        QQPlatformConfig previous,
+        QQPlatformConfig config,
+        CancellationToken cancellationToken)
+    {
+        NormalizeConfig(config);
+        config.Validate();
+        CurrentConfigValue = config;
+        _config = config;
+        return Task.CompletedTask;
+    }
+
+    private void NormalizeConfig(QQPlatformConfig config)
+    {
+        var changed = config.NormalizeLegacyTokenEndpoint();
+        if (config.Intents == 1UL << 25)
+        {
+            config.Intents |= 1UL << 26;
+            changed = true;
+        }
+        if (changed) Config.Save(config);
     }
 
     public async Task StopAsync()

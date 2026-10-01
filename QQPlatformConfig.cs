@@ -11,7 +11,7 @@ public sealed class QQPlatformConfig
     public string AppId { get; set; } = string.Empty;
 
     [ConfigField("同一机器人应用的 AppSecret，请勿提交到公开仓库。",
-        Label = "AppSecret", Placeholder = "必填",
+        Label = "AppSecret", Placeholder = "必填", Type = "password",
         Group = "credentials", GroupLabel = "机器人凭证", GroupOrder = 10, Order = 20)]
     public string AppSecret { get; set; } = string.Empty;
 
@@ -28,6 +28,7 @@ public sealed class QQPlatformConfig
     [ConfigField("当前分片编号，从 0 开始且小于分片总数。单实例填 0。",
         Label = "分片编号", Min = 0, Default = 0,
         Group = "shard", GroupLabel = "分片", GroupOrder = 30, Order = 10)]
+    [ConfigVisibleWhen(nameof(ShardCount), ConfigConditionOperator.GreaterThan, "1")]
     public int ShardId { get; set; }
 
     [ConfigField("分片总数，必须大于 0。单实例填 1。",
