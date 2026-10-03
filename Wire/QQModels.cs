@@ -37,6 +37,7 @@ internal sealed record QQUser
     [JsonPropertyName("member_role")] public string? MemberRole { get; init; }
     [JsonPropertyName("union_openid")] public string? UnionOpenId { get; init; }
     [JsonPropertyName("bot")] public bool Bot { get; init; }
+    [JsonPropertyName("joined_at")] public string? JoinedAt { get; init; }
 }
 
 internal sealed record QQAttachment
@@ -45,6 +46,10 @@ internal sealed record QQAttachment
     [JsonPropertyName("filename")] public string? FileName { get; init; }
     [JsonPropertyName("content_type")] public string? ContentType { get; init; }
     [JsonPropertyName("voice_wav_url")] public string? VoiceWavUrl { get; init; }
+    [JsonPropertyName("asr_refer_text")] public string? AsrText { get; init; }
+    [JsonPropertyName("width")] public int? Width { get; init; }
+    [JsonPropertyName("height")] public int? Height { get; init; }
+    [JsonPropertyName("size")] public long? Size { get; init; }
 }
 
 internal sealed record QQIncomingMessage
@@ -57,6 +62,15 @@ internal sealed record QQIncomingMessage
     [JsonPropertyName("attachments")] public IReadOnlyList<QQAttachment>? Attachments { get; init; }
     [JsonPropertyName("mentions")] public IReadOnlyList<QQUser>? Mentions { get; init; }
     [JsonPropertyName("message_reference")] public QQMessageReference? MessageReference { get; init; }
+    [JsonPropertyName("message_type")] public int MessageType { get; init; }
+    [JsonPropertyName("msg_elements")] public IReadOnlyList<QQIncomingMessageElement>? MessageElements { get; init; }
+}
+
+internal sealed record QQIncomingMessageElement
+{
+    [JsonPropertyName("msg_idx")] public string? MessageIndex { get; init; }
+    [JsonPropertyName("content")] public string? Content { get; init; }
+    [JsonPropertyName("attachments")] public IReadOnlyList<QQAttachment>? Attachments { get; init; }
 }
 
 internal sealed record QQMessageReference([property: JsonPropertyName("message_id")] string? MessageId);
@@ -65,7 +79,25 @@ internal sealed record QQGroupInfo
 {
     [JsonPropertyName("group_openid")] public string? GroupOpenId { get; init; }
     [JsonPropertyName("group_name")] public string? GroupName { get; init; }
+    [JsonPropertyName("group_member_num")] public int? MemberCount { get; init; }
 }
+
+internal sealed record QQGroupMemberPage
+{
+    [JsonPropertyName("members")] public IReadOnlyList<QQUser>? Members { get; init; }
+    [JsonPropertyName("next_cursor")] public string? NextCursor { get; init; }
+}
+
+internal sealed record QQMemberMuteState(
+    [property: JsonPropertyName("op")] string Operation,
+    [property: JsonPropertyName("member_openid")] string MemberOpenId,
+    [property: JsonPropertyName("mute_expire_at"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpireAt);
+
+internal sealed record QQMuteRequest([property: JsonPropertyName("members")] IReadOnlyList<QQMemberMuteState> Members);
+
+internal sealed record QQRemoveMembersRequest(
+    [property: JsonPropertyName("member_openids")] IReadOnlyList<string> MemberOpenIds,
+    [property: JsonPropertyName("add_to_member_blacklist")] bool AddToBlacklist);
 
 internal sealed record QQInteractionData
 {
@@ -185,7 +217,11 @@ internal sealed record QQEmbedThumbnail([property: JsonPropertyName("url")] stri
 internal sealed record QQEmbedField([property: JsonPropertyName("name")] string Name);
 internal sealed record QQSendResponse(
     [property: JsonPropertyName("id")] string? Id,
-    [property: JsonPropertyName("timestamp")] JsonElement Timestamp);
+    [property: JsonPropertyName("timestamp")] JsonElement Timestamp,
+    [property: JsonPropertyName("ext_info")] QQMessageExtInfo? ExtInfo);
+
+internal sealed record QQMessageExtInfo(
+    [property: JsonPropertyName("ref_idx")] string? ReferenceIndex);
 
 internal sealed record QQUploadRequest(
     [property: JsonPropertyName("file_type")] int FileType,
@@ -194,7 +230,8 @@ internal sealed record QQUploadRequest(
     [property: JsonPropertyName("file_name"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? FileName = null);
 internal sealed record QQUploadResponse(
     [property: JsonPropertyName("file_info")] string? FileInfo,
-    [property: JsonPropertyName("id")] string? Id);
+    [property: JsonPropertyName("id")] string? Id,
+    [property: JsonPropertyName("ttl")] int? Ttl = null);
 
 internal sealed record QQUploadPrepareRequest(
     [property: JsonPropertyName("file_type")] int FileType,
@@ -207,7 +244,12 @@ internal sealed record QQUploadPrepareRequest(
 internal sealed record QQUploadPrepareResponse(
     [property: JsonPropertyName("upload_id")] string? UploadId,
     [property: JsonPropertyName("block_size"), JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)] int BlockSize,
-    [property: JsonPropertyName("parts")] IReadOnlyList<QQUploadPart>? Parts);
+    [property: JsonPropertyName("parts")] IReadOnlyList<QQUploadPart>? Parts,
+    [property: JsonPropertyName("upload_config")] QQUploadConfig? Config = null);
+
+internal sealed record QQUploadConfig(
+    [property: JsonPropertyName("retry_timeout")] int? RetryTimeoutSeconds,
+    [property: JsonPropertyName("retry_delay")] int? RetryDelaySeconds);
 
 internal sealed record QQUploadPart(
     [property: JsonPropertyName("index")] int Index,

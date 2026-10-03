@@ -57,9 +57,8 @@ internal sealed class QQChunkedUploadClient(QQApiTransport transport, HttpClient
             await file.ReadExactlyAsync(bytes.AsMemory(), cancellationToken).ConfigureAwait(false);
             await PutPartAsync(new Uri(part.PresignedUrl!), bytes, cancellationToken).ConfigureAwait(false);
             var md5 = Convert.ToHexStringLower(MD5.HashData(bytes));
-            using var finishResponse = await transport.SendAsync(HttpMethod.Post, QQApiRoutes.UploadPartFinish(channel),
-                new QQUploadPartFinishRequest(prepared.UploadId, part.Index,
-                    length.ToString(CultureInfo.InvariantCulture), md5), cancellationToken).ConfigureAwait(false);
+            await FinishPartAsync(channel, new QQUploadPartFinishRequest(prepared.UploadId, part.Index,
+                length.ToString(CultureInfo.InvariantCulture), md5), prepared.Config, cancellationToken).ConfigureAwait(false);
         }
 
         using var completeResponse = await transport.SendAsync(HttpMethod.Post, QQApiRoutes.Files(channel),
@@ -67,6 +66,28 @@ internal sealed class QQChunkedUploadClient(QQApiTransport transport, HttpClient
             cancellationToken).ConfigureAwait(false);
         return await completeResponse.Content.ReadFromJsonAsync<QQUploadResponse>(cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("QQ file upload completion response is empty.");
+    }
+
+    /// <summary>QQ answers 40093001 when its storage channel hiccups; the documented remedy is to retry for a while.</summary>
+    private async Task FinishPartAsync(Channel channel, QQUploadPartFinishRequest request,
+        QQUploadConfig? config, CancellationToken cancellationToken)
+    {
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(config?.RetryTimeoutSeconds ?? 120, 1, 600));
+        var delay = TimeSpan.FromSeconds(Math.Clamp(config?.RetryDelaySeconds ?? 1, 1, 10));
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            try
+            {
+                using var response = await transport.SendAsync(HttpMethod.Post, QQApiRoutes.UploadPartFinish(channel),
+                    request, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (QQApiException error) when (error.ErrorCode == 40093001 && DateTimeOffset.UtcNow + delay < deadline)
+            {
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     private async Task PutPartAsync(Uri url, byte[] bytes, CancellationToken cancellationToken)

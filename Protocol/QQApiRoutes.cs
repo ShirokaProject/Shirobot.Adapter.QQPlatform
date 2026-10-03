@@ -42,6 +42,32 @@ internal static class QQApiRoutes
         return $"v2/groups/{Uri.EscapeDataString(groupOpenId)}/info";
     }
 
+    public static string GroupMembers(string groupOpenId, string? cursor)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupOpenId);
+        var path = $"v2/groups/{Uri.EscapeDataString(groupOpenId)}/members";
+        return string.IsNullOrEmpty(cursor) ? path : $"{path}?cursor={Uri.EscapeDataString(cursor)}";
+    }
+
+    public static string GroupMember(string groupOpenId, string memberOpenId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupOpenId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberOpenId);
+        return $"v2/groups/{Uri.EscapeDataString(groupOpenId)}/members/{Uri.EscapeDataString(memberOpenId)}";
+    }
+
+    public static string GroupRestrictChat(string groupOpenId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupOpenId);
+        return $"v2/groups/{Uri.EscapeDataString(groupOpenId)}/restrict_chat_setting";
+    }
+
+    public static string GroupRemoveMembers(string groupOpenId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupOpenId);
+        return $"v2/groups/{Uri.EscapeDataString(groupOpenId)}/batch_remove_members";
+    }
+
     public static string Interaction(string interactionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(interactionId);

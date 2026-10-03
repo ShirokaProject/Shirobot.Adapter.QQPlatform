@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using System.Text.Json;
+using System.Threading.Channels;
 using ShiroBot.Adapter.QQPlatform.Wire;
 using ShiroBot.SDK.Plugin;
 
@@ -7,18 +8,32 @@ namespace ShiroBot.Adapter.QQPlatform.Protocol;
 
 internal sealed class QQGatewayClient(
     QQPlatformConfig config, QQOpenApiClient api, QQTokenProvider tokens,
-    Func<GatewayPayload, Task> onDispatch, Action<QQUser?> onReady, IConsoleLogger logger)
+    Func<GatewayPayload, Task> onDispatch, Action<QQUser?> onReady, IConsoleLogger logger,
+    Action<GatewayPayload>? onReceive = null, Action<string>? onFatal = null)
 {
+    private const int DispatchQueueCapacity = 1024;
+    private static readonly TimeSpan QuickDisconnectThreshold = TimeSpan.FromSeconds(5);
+    private const int MaxQuickDisconnects = 3;
+
     private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private CancellationTokenSource? _lifetime;
     private Task? _runner;
+    private Task? _worker;
+    private Channel<GatewayPayload>? _queue;
     private string? _sessionId;
     private long? _sequence;
+    private bool _connectedSuccessfully;
+    private int _quickDisconnects;
 
     public async Task StartAsync()
     {
         if (_runner is not null) throw new InvalidOperationException("Gateway is already running.");
         _lifetime = new CancellationTokenSource();
+        _queue = Channel.CreateBounded<GatewayPayload>(new BoundedChannelOptions(DispatchQueueCapacity)
+        {
+            SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait
+        });
+        _worker = Task.Run(() => DispatchLoopAsync(_queue.Reader, _lifetime.Token));
         _runner = RunAsync(_lifetime.Token);
         try
         {
@@ -35,14 +50,35 @@ internal sealed class QQGatewayClient(
     {
         if (_lifetime is null) return;
         await _lifetime.CancelAsync().ConfigureAwait(false);
-        if (_runner is not null)
+        _queue?.Writer.TryComplete();
+        foreach (var task in new[] { _runner, _worker })
         {
-            try { await _runner.ConfigureAwait(false); }
+            if (task is null) continue;
+            try { await task.ConfigureAwait(false); }
             catch (OperationCanceledException) { }
         }
         _lifetime.Dispose();
         _lifetime = null;
         _runner = null;
+        _worker = null;
+        _queue = null;
+    }
+
+    /// <summary>Events run one at a time and in order, but never stall the socket reader or the heartbeat.</summary>
+    private async Task DispatchLoopAsync(ChannelReader<GatewayPayload> reader, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var payload in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                try { await onDispatch(payload).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.Error($"QQ Official event {payload.EventType} dispatch failed: {ex.Message}");
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
     }
 
     private async Task RunAsync(CancellationToken cancellationToken)
@@ -50,20 +86,52 @@ internal sealed class QQGatewayClient(
         var delaySeconds = config.ReconnectMinimumSeconds;
         while (!cancellationToken.IsCancellationRequested)
         {
+            TimeSpan? forcedDelay = null;
+            var openedAt = DateTimeOffset.UtcNow;
             try
             {
                 await ConnectOnceAsync(cancellationToken).ConfigureAwait(false);
-                delaySeconds = config.ReconnectMinimumSeconds;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
             catch (QQAuthenticationException ex)
             {
                 _ready.TrySetException(ex);
                 logger.Error(ex.Message);
+                onFatal?.Invoke(ex.Message);
                 break;
             }
+            catch (QQGatewayClosedException ex)
+            {
+                var action = QQGatewayClosePolicy.Decide(ex.Code);
+                if (action.Fatal)
+                {
+                    _ready.TrySetException(ex);
+                    logger.Error($"QQ Official gateway stopped: {action.Reason}. Contact the QQ platform; not reconnecting.");
+                    onFatal?.Invoke(action.Reason);
+                    break;
+                }
+                logger.Warning($"QQ Official gateway closed: {action.Reason}.");
+                if (action.ClearSession) { _sessionId = null; _sequence = null; }
+                if (action.RefreshToken) tokens.Invalidate();
+                forcedDelay = action.Delay;
+            }
             catch (Exception ex) { logger.Warning($"QQ Official gateway disconnected: {ex.Message}"); }
-            try { await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken).ConfigureAwait(false); }
+
+            // A connection that was healthy resets the backoff; one that dies at once counts towards a long pause.
+            if (_connectedSuccessfully)
+            {
+                delaySeconds = config.ReconnectMinimumSeconds;
+                _connectedSuccessfully = false;
+            }
+            if (DateTimeOffset.UtcNow - openedAt < QuickDisconnectThreshold && ++_quickDisconnects >= MaxQuickDisconnects)
+            {
+                logger.Warning("QQ Official gateway keeps disconnecting right after connecting; pausing before the next attempt.");
+                _quickDisconnects = 0;
+                forcedDelay ??= QQGatewayClosePolicy.RateLimitDelay;
+            }
+            else if (DateTimeOffset.UtcNow - openedAt >= QuickDisconnectThreshold) _quickDisconnects = 0;
+
+            try { await Task.Delay(forcedDelay ?? TimeSpan.FromSeconds(delaySeconds), cancellationToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
             delaySeconds = Math.Min(config.ReconnectMaximumSeconds, delaySeconds * 2);
         }
@@ -97,11 +165,23 @@ internal sealed class QQGatewayClient(
                 properties = new Dictionary<string, string> { ["$os"] = Environment.OSVersion.Platform.ToString(), ["$browser"] = "shirobot", ["$device"] = "shirobot" } } }, cancellationToken).ConfigureAwait(false);
 
         using var connected = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var awaitingAck = false;
+        var ackTimedOut = false;
         var heartbeat = Task.Run(async () =>
         {
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(interval));
             while (await timer.WaitForNextTickAsync(connected.Token).ConfigureAwait(false))
+            {
+                // A silent, half-open connection never closes by itself: no ACK for a whole interval means it is dead.
+                if (Volatile.Read(ref awaitingAck))
+                {
+                    ackTimedOut = true;
+                    await connected.CancelAsync().ConfigureAwait(false);
+                    return;
+                }
+                Volatile.Write(ref awaitingAck, true);
                 await SendAsync(new { op = 1, d = _sequence }, connected.Token).ConfigureAwait(false);
+            }
         }, connected.Token);
 
         try
@@ -117,20 +197,35 @@ internal sealed class QQGatewayClient(
                         {
                             var ready = payload.Data.Deserialize<ReadyData>();
                             _sessionId = ready?.SessionId;
+                            _connectedSuccessfully = true;
                             onReady(ready?.User);
                             _ready.TrySetResult();
                         }
-                        else if (payload.EventType == "RESUMED") _ready.TrySetResult();
-                        await onDispatch(payload).ConfigureAwait(false);
+                        else if (payload.EventType == "RESUMED")
+                        {
+                            _connectedSuccessfully = true;
+                            _ready.TrySetResult();
+                        }
+                        // Time-sensitive work (button acknowledgements) must not wait behind earlier events.
+                        onReceive?.Invoke(payload);
+                        await _queue!.Writer.WriteAsync(payload, connected.Token).ConfigureAwait(false);
                         break;
                     case 1: await SendAsync(new { op = 1, d = _sequence }, connected.Token).ConfigureAwait(false); break;
                     case 7: throw new IOException("QQ gateway requested reconnect.");
                     case 9:
-                        if (payload.Data.ValueKind != JsonValueKind.True) { _sessionId = null; _sequence = null; }
+                        if (payload.Data.ValueKind != JsonValueKind.True)
+                        {
+                            _sessionId = null; _sequence = null;
+                            tokens.Invalidate();
+                        }
                         throw new IOException("QQ gateway rejected the session.");
-                    case 11: break;
+                    case 11: Volatile.Write(ref awaitingAck, false); break;
                 }
             }
+        }
+        catch (OperationCanceledException) when (ackTimedOut && !cancellationToken.IsCancellationRequested)
+        {
+            throw new IOException("QQ gateway did not acknowledge the heartbeat.");
         }
         finally
         {
@@ -149,7 +244,10 @@ internal sealed class QQGatewayClient(
         do
         {
             part = await socket.ReceiveAsync(new ArraySegment<byte>(chunk), cancellationToken).ConfigureAwait(false);
-            if (part.MessageType == WebSocketMessageType.Close) throw new IOException("QQ gateway closed the socket.");
+            if (part.MessageType == WebSocketMessageType.Close)
+                throw new QQGatewayClosedException(
+                    (part.CloseStatus ?? socket.CloseStatus) is { } status ? (int)status : null,
+                    part.CloseStatusDescription ?? socket.CloseStatusDescription);
             buffer.Write(chunk, 0, part.Count);
             if (buffer.Length > 1024 * 1024) throw new InvalidDataException("QQ gateway payload exceeds 1 MiB.");
         } while (!part.EndOfMessage);

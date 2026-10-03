@@ -66,6 +66,7 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
         var tokens = new QQTokenProvider(_http, config);
         var api = new QQOpenApiClient(_http, config, tokens, _uploadHttp);
         _api = api;
+        _channels.Attach(api);
         try
         {
             var bot = await api.GetCurrentUserAsync().ConfigureAwait(false);
@@ -82,7 +83,7 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
             Logger.Warning($"QQ Official /users/@me lookup failed ({ex.GetType().Name}); " +
                 "will use the Gateway READY identity.");
         }
-        _messages = new QQMessageService(api, Logger);
+        _messages = new QQMessageService(api, Logger, () => _users.Self);
         _officialMessages = new QQOfficialMessageService(api, _messages, Logger, GetCachedGroupName);
         _gateway = new QQGatewayClient(config, api, tokens, DispatchAsync, user =>
         {
@@ -95,7 +96,8 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
                     Logger.Info($"QQ Official bot identity from Gateway READY: id={user.Id}, " +
                         $"username={user.Username ?? "<missing>"}, bot={user.Bot}");
             }
-        }, Logger);
+        }, Logger, AcknowledgeInteractionEarly, reason =>
+            _ = _events.PublishAsync(new BotOfflineEvent { Platform = Platform, SelfId = _selfId, Reason = reason }));
         try { await _gateway.StartAsync().ConfigureAwait(false); }
         catch { await StopAsync().ConfigureAwait(false); throw; }
         Logger.Success("QQ Official gateway connected.");
@@ -140,6 +142,7 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
         _messages = null;
         _officialMessages = null;
         _api = null;
+        _channels.Attach(null);
         _http?.Dispose();
         _http = null;
         _uploadHttp?.Dispose();
@@ -185,13 +188,27 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
                 if (!string.IsNullOrWhiteSpace(name))
                     translated = groupMessage with { Channel = groupMessage.Channel with { Name = name } };
             }
-            if (translated is MessageEvent message) _messages?.RegisterIncoming(message);
+            if (translated is MessageEvent message && _messages is not null)
+                translated = _messages.RegisterIncoming(message);
             if (translated is not null) await _events.PublishAsync(translated).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             Logger.Error($"QQ Official event {payload.EventType} failed: {ex.Message}");
         }
+    }
+
+    /// <summary>QQ expects the button callback to be answered quickly, so do it as soon as the event arrives.</summary>
+    private void AcknowledgeInteractionEarly(GatewayPayload payload)
+    {
+        if (payload.EventType != "INTERACTION_CREATE" || _api is not { } api) return;
+        var interaction = payload.Data.Deserialize<QQInteractionData>();
+        if (interaction is not { Type: 11, Id: { Length: > 0 } id }) return;
+        _ = Task.Run(async () =>
+        {
+            try { await api.AcknowledgeInteractionAsync(id).ConfigureAwait(false); }
+            catch (Exception ex) { Logger.Warning($"QQ interaction acknowledgement failed: {ex.Message}"); }
+        });
     }
 
     private void LogMentionDiagnostics(GatewayPayload payload, MessageEvent message)
@@ -267,5 +284,3 @@ internal sealed class QQUserService : IUserService
     public User? Self { get; set; }
     public Task<User> GetSelfAsync() => Task.FromResult(Self ?? throw new InvalidOperationException("QQ bot identity is not ready."));
 }
-
-internal sealed class QQChannelService : IChannelService;

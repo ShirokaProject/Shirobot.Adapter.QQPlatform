@@ -60,8 +60,9 @@ internal static class QQEventTranslator
             var channelId = isGroup ? message.GroupOpenId : senderId;
             if (string.IsNullOrWhiteSpace(channelId) || string.IsNullOrWhiteSpace(senderId)) return null;
             var segments = new List<MessageSegment>();
-            if (!string.IsNullOrWhiteSpace(message.MessageReference?.MessageId))
-                segments.Add(new QuoteSegment(message.MessageReference.MessageId));
+            var referencedMessageId = GetReferencedMessageIndex(message, raw);
+            if (!string.IsNullOrWhiteSpace(referencedMessageId))
+                segments.Add(new QuoteSegment(referencedMessageId));
             var mentionNames = (message.Mentions ?? [])
                 .Select(mention => (Id: mention.MemberOpenId ?? mention.Id, mention.Username))
                 .Where(mention => !string.IsNullOrWhiteSpace(mention.Id) && !string.IsNullOrWhiteSpace(mention.Username))
@@ -102,18 +103,7 @@ internal static class QQEventTranslator
                 }
             }
             foreach (var attachment in message.Attachments ?? [])
-            {
-                var url = attachment.VoiceWavUrl ?? attachment.Url;
-                if (string.IsNullOrWhiteSpace(url)) continue;
-                var mime = attachment.ContentType ?? "";
-                segments.Add(mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
-                    ? new ImageSegment(url) { FileName = attachment.FileName }
-                    : mime.StartsWith("audio/", StringComparison.OrdinalIgnoreCase)
-                        ? new AudioSegment(url) { FileName = attachment.FileName }
-                        : mime.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
-                            ? new VideoSegment(url) { FileName = attachment.FileName }
-                            : new FileSegment(url) { FileName = attachment.FileName });
-            }
+                if (QQAttachmentMapper.ToSegment(attachment) is { } resource) segments.Add(resource);
             var sender = new User(senderId) { Name = message.Author?.Username, IsBot = message.Author?.Bot ?? false };
             return new MessageEvent
             {
@@ -129,12 +119,106 @@ internal static class QQEventTranslator
                 Timestamp = DateTimeOffset.TryParse(message.Timestamp, out var timestamp) ? timestamp : DateTimeOffset.UtcNow
             };
         }
+        if (Lifecycle.TryGetValue(type, out var lifecycle) && TranslateLifecycle(payload, raw, lifecycle, selfId) is { } lifecycleEvent)
+            return lifecycleEvent;
         if (type is "READY" or "RESUMED") return null;
         return new PlatformEvent { Platform = Platform, SelfId = selfId, Raw = raw, Kind = type.ToLowerInvariant() };
     }
 
+    private static readonly Dictionary<string, (string Kind, bool Group)> Lifecycle = new(StringComparer.Ordinal)
+    {
+        ["GROUP_ADD_ROBOT"] = (QEventKinds.OfficialGroupAddRobot, true),
+        ["GROUP_DEL_ROBOT"] = (QEventKinds.OfficialGroupDelRobot, true),
+        ["GROUP_MSG_REJECT"] = (QEventKinds.OfficialGroupMsgReject, true),
+        ["GROUP_MSG_RECEIVE"] = (QEventKinds.OfficialGroupMsgReceive, true),
+        ["FRIEND_ADD"] = (QEventKinds.OfficialFriendAdd, false),
+        ["FRIEND_DEL"] = (QEventKinds.OfficialFriendDel, false),
+        ["C2C_MSG_REJECT"] = (QEventKinds.OfficialC2CMsgReject, false),
+        ["C2C_MSG_RECEIVE"] = (QEventKinds.OfficialC2CMsgReceive, false),
+    };
+
+    /// <summary>Group/friend lifecycle events: keep the channel and event id so plugins can react and reply.</summary>
+    private static BotEvent? TranslateLifecycle(GatewayPayload payload, JsonElement raw,
+        (string Kind, bool Group) lifecycle, string? selfId)
+    {
+        if (raw.ValueKind != JsonValueKind.Object) return null;
+        var channelId = lifecycle.Group ? ReadString(raw, "group_openid") : ReadString(raw, "openid");
+        if (string.IsNullOrWhiteSpace(channelId)) return null;
+        var operatorId = lifecycle.Group ? ReadString(raw, "op_member_openid") : channelId;
+        DateTimeOffset? eventTime = null;
+        if (raw.TryGetProperty("timestamp", out var stamp))
+        {
+            if (stamp.ValueKind == JsonValueKind.Number && stamp.TryGetInt64(out var seconds))
+                eventTime = DateTimeOffset.FromUnixTimeSeconds(seconds);
+            else if (stamp.ValueKind == JsonValueKind.String && DateTimeOffset.TryParse(stamp.GetString(), out var parsed))
+                eventTime = parsed;
+        }
+        var lifecycleRaw = new QOfficialLifecycleEvent
+        {
+            Time = eventTime ?? DateTimeOffset.UtcNow,
+            SelfId = long.TryParse(selfId, out var numericSelfId) ? numericSelfId : 0,
+            EventId = payload.Id,
+            Target = new QOfficialMessageTarget(
+                lifecycle.Group ? QOfficialMessageScene.Group : QOfficialMessageScene.Direct, channelId),
+            OperatorId = operatorId,
+            EventTime = eventTime
+        };
+        // The SDK has types for "bot joined" and "member left"; the bot being removed is the latter.
+        if (lifecycle.Kind == QEventKinds.OfficialGroupAddRobot)
+            return new GuildInviteEvent
+            {
+                Platform = Platform, SelfId = selfId, Raw = lifecycleRaw,
+                GuildId = channelId, InviterId = operatorId ?? string.Empty
+            };
+        if (lifecycle.Kind == QEventKinds.OfficialGroupDelRobot)
+            return new MemberLeftEvent
+            {
+                Platform = Platform, SelfId = selfId, Raw = lifecycleRaw,
+                Channel = Channel.Group(channelId), UserId = selfId ?? string.Empty, OperatorId = operatorId
+            };
+        return new PlatformEvent
+        {
+            Platform = Platform, SelfId = selfId, Kind = lifecycle.Kind,
+            Channel = lifecycle.Group ? Channel.Group(channelId) : Channel.Direct(channelId),
+            Raw = lifecycleRaw
+        };
+    }
+
+    private static string? ReadString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
     private static void AddMentionId(HashSet<string> mentions, string? id)
     {
         if (!string.IsNullOrWhiteSpace(id)) mentions.Add(id);
+    }
+
+    private static string? GetSceneExtension(JsonElement raw, string prefix)
+    {
+        if (raw.ValueKind != JsonValueKind.Object
+            || !raw.TryGetProperty("message_scene", out var scene)
+            || scene.ValueKind != JsonValueKind.Object
+            || !scene.TryGetProperty("ext", out var extensions)
+            || extensions.ValueKind != JsonValueKind.Array) return null;
+        foreach (var extension in extensions.EnumerateArray())
+        {
+            if (extension.ValueKind != JsonValueKind.String
+                || extension.GetString() is not { } value
+                || !value.StartsWith(prefix, StringComparison.Ordinal)
+                || value.Length <= prefix.Length) continue;
+            return value[prefix.Length..].Trim();
+        }
+        return null;
+    }
+
+    private static string? GetReferencedMessageIndex(QQIncomingMessage message, JsonElement raw)
+    {
+        // QQ message_type=103 carries the most authoritative reference in msg_elements[0].
+        // ref_msg_idx can be stale or a TMP_* placeholder for nested quote messages.
+        if (message.MessageType == 103
+            && !string.IsNullOrWhiteSpace(message.MessageElements?.FirstOrDefault()?.MessageIndex))
+            return message.MessageElements[0].MessageIndex;
+        return message.MessageReference?.MessageId
+            ?? GetSceneExtension(raw, "ref_msg_idx=")
+            ?? GetSceneExtension(raw, "refMsgIdx:");
     }
 }

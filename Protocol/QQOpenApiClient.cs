@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using ShiroBot.Adapter.QQPlatform.Wire;
 using ShiroBot.Model.QQ;
@@ -10,8 +11,10 @@ internal sealed class QQOpenApiClient
 {
     private readonly QQApiTransport _transport;
     private readonly QQChunkedUploadClient _chunked;
+    private readonly QQUploadCache _uploads = new();
     private readonly Dictionary<string, long> _acknowledged = [];
     private readonly Queue<(string Id, long Serial)> _acknowledgementOrder = new();
+    private readonly ConcurrentDictionary<string, string> _sentReferenceIndices = new(StringComparer.Ordinal);
     private long _acknowledgementSerial;
 
     public QQOpenApiClient(HttpClient http, QQPlatformConfig config, QQTokenProvider tokens,
@@ -50,12 +53,17 @@ internal sealed class QQOpenApiClient
         if (string.IsNullOrWhiteSpace(sent.Id))
             throw new InvalidDataException("QQ message response contains no message ID (it may be pending audit).");
         var result = new SentMessage(sent.Id);
+        if (!string.IsNullOrWhiteSpace(sent.ExtInfo?.ReferenceIndex))
+            _sentReferenceIndices[sent.Id] = sent.ExtInfo.ReferenceIndex;
         if (sent.Timestamp.ValueKind == JsonValueKind.String && DateTimeOffset.TryParse(sent.Timestamp.GetString(), out var timestamp))
             result = result with { Timestamp = timestamp };
         else if (sent.Timestamp.ValueKind == JsonValueKind.Number && sent.Timestamp.TryGetInt64(out var seconds))
             result = result with { Timestamp = DateTimeOffset.FromUnixTimeSeconds(seconds) };
         return result;
     }
+
+    internal string? TakeSentReferenceIndex(string messageId) =>
+        _sentReferenceIndices.TryRemove(messageId, out var referenceIndex) ? referenceIndex : null;
 
     public async Task SendTypingAsync(Channel channel, QQSendRequest message, CancellationToken cancellationToken = default)
     {
@@ -72,9 +80,12 @@ internal sealed class QQOpenApiClient
     public async Task<string> UploadRemoteAsync(Channel channel, int fileType, Uri uri,
         string? fileName = null, CancellationToken cancellationToken = default)
     {
+        var cacheKey = QQUploadCache.Key(channel, fileType, $"{uri.AbsoluteUri}|{fileName}");
+        if (_uploads.Get(cacheKey) is { } cached) return cached;
         var uploaded = await PostRemoteAsync(channel, fileType, uri, false, fileName, cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(uploaded?.FileInfo))
             throw new InvalidDataException("QQ media upload response contains no file_info.");
+        _uploads.Set(cacheKey, uploaded.FileInfo, uploaded.Ttl);
         return uploaded.FileInfo;
     }
 
@@ -90,10 +101,16 @@ internal sealed class QQOpenApiClient
     public async Task<string> UploadLocalAsync(Channel channel, int fileType, string path,
         string fileName, CancellationToken cancellationToken = default)
     {
+        // Path + size + mtime identifies the content well enough without reading the file a second time.
+        var info = new FileInfo(path);
+        var cacheKey = QQUploadCache.Key(channel, fileType,
+            $"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}|{fileName}");
+        if (_uploads.Get(cacheKey) is { } cached) return cached;
         var uploaded = await _chunked.UploadAsync(channel, fileType, path, fileName, false, cancellationToken)
             .ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(uploaded.FileInfo))
             throw new InvalidDataException("QQ local upload response contains no file_info.");
+        _uploads.Set(cacheKey, uploaded.FileInfo, uploaded.Ttl);
         return uploaded.FileInfo;
     }
 
@@ -118,13 +135,46 @@ internal sealed class QQOpenApiClient
             ?? throw new InvalidDataException("QQ media upload response is empty.");
     }
 
-    public async Task<string?> GetGroupNameAsync(string groupOpenId, CancellationToken cancellationToken = default)
+    public async Task<string?> GetGroupNameAsync(string groupOpenId, CancellationToken cancellationToken = default) =>
+        (await GetGroupInfoAsync(groupOpenId, cancellationToken).ConfigureAwait(false)).GroupName;
+
+    public async Task<QQGroupInfo> GetGroupInfoAsync(string groupOpenId, CancellationToken cancellationToken = default)
     {
         using var response = await _transport.SendAsync(HttpMethod.Get, QQApiRoutes.GroupInfo(groupOpenId), null, cancellationToken).ConfigureAwait(false);
         var info = await response.Content.ReadFromJsonAsync<QQGroupInfo>(cancellationToken).ConfigureAwait(false);
         if (info is null || !string.Equals(info.GroupOpenId, groupOpenId, StringComparison.Ordinal))
             throw new InvalidDataException("QQ group info response has a mismatched group_openid.");
-        return info.GroupName;
+        return info;
+    }
+
+    public async Task<QQGroupMemberPage> GetGroupMembersAsync(string groupOpenId, string? cursor,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await _transport.SendAsync(HttpMethod.Get, QQApiRoutes.GroupMembers(groupOpenId, cursor), null, cancellationToken).ConfigureAwait(false);
+        return await response.Content.ReadFromJsonAsync<QQGroupMemberPage>(cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("QQ group member list response is empty.");
+    }
+
+    public async Task<QQUser> GetGroupMemberAsync(string groupOpenId, string memberOpenId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await _transport.SendAsync(HttpMethod.Get, QQApiRoutes.GroupMember(groupOpenId, memberOpenId), null, cancellationToken).ConfigureAwait(false);
+        return await response.Content.ReadFromJsonAsync<QQUser>(cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("QQ group member response is empty.");
+    }
+
+    public async Task SetMemberMuteAsync(string groupOpenId, QQMemberMuteState state,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await _transport.SendAsync(HttpMethod.Post, QQApiRoutes.GroupRestrictChat(groupOpenId),
+            new QQMuteRequest([state]), cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task RemoveGroupMembersAsync(string groupOpenId, IReadOnlyList<string> memberOpenIds,
+        bool addToBlacklist, CancellationToken cancellationToken = default)
+    {
+        using var response = await _transport.SendAsync(HttpMethod.Post, QQApiRoutes.GroupRemoveMembers(groupOpenId),
+            new QQRemoveMembersRequest(memberOpenIds, addToBlacklist), cancellationToken).ConfigureAwait(false);
     }
 
     public async Task AcknowledgeInteractionAsync(string interactionId,

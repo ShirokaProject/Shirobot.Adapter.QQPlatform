@@ -12,10 +12,31 @@ internal sealed class QQApiTransport(HttpClient http, QQPlatformConfig config, Q
 
     public async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, object? body, CancellationToken cancellationToken)
     {
+        // Re-sending a POST could duplicate a message, so only idempotent calls are retried after a server or network fault.
+        var canRetryTransient = method != HttpMethod.Post;
+        var transientRetry = 0;
         for (var rateRetry = 0; rateRetry <= 3; rateRetry++)
         {
             var token = await tokens.GetAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            var response = await SendOnceAsync(method, path, body, token, cancellationToken).ConfigureAwait(false);
+            HttpResponseMessage response;
+            try
+            {
+                response = await SendOnceAsync(method, path, body, token, cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException) when (canRetryTransient && transientRetry < 2)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(++transientRetry), cancellationToken).ConfigureAwait(false);
+                rateRetry--;
+                continue;
+            }
+            if (canRetryTransient && transientRetry < 2
+                && response.StatusCode is HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout)
+            {
+                response.Dispose();
+                await Task.Delay(TimeSpan.FromSeconds(++transientRetry), cancellationToken).ConfigureAwait(false);
+                rateRetry--;
+                continue;
+            }
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 response.Dispose();
@@ -100,5 +121,11 @@ internal sealed class QQApiException(string path, HttpStatusCode status, int err
         null, status)
 {
     public int ErrorCode { get; } = errorCode;
+
+    /// <summary>The message being replied to is too old, or has used up its passive replies.</summary>
+    public bool IsPassiveReplyExpired => ErrorCode is 40034128 or 40034005 or 304103;
+
+    /// <summary>Proactive messages are over the bot's or the recipient's rate limit.</summary>
+    public bool IsProactiveRateLimited => ErrorCode == 40034100;
     public string? TraceId { get; } = traceId;
 }
