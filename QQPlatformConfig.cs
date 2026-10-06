@@ -25,6 +25,13 @@ public sealed class QQPlatformConfig
         Group = "events", GroupLabel = "事件", GroupOrder = 20, Order = 20)]
     public bool TraceEvents { get; set; }
 
+    [ConfigField("订阅群成员加入、退出及入群申请事件（1 << 24）；入群申请需要群管理员身份。",
+        Label = "订阅群成员事件", Default = false,
+        Group = "events", GroupLabel = "事件", GroupOrder = 20, Order = 30)]
+    public bool SubscribeGroupMemberEvents { get; set; }
+
+    internal ulong EffectiveIntents => Intents | (SubscribeGroupMemberEvents ? 1UL << 24 : 0);
+
     [ConfigField("当前分片编号，从 0 开始且小于分片总数。单实例填 0。",
         Label = "分片编号", Min = 0, Default = 0,
         Group = "shard", GroupLabel = "分片", GroupOrder = 30, Order = 10)]

@@ -20,10 +20,10 @@ internal sealed class QQTokenProvider(HttpClient http, QQPlatformConfig config)
             if (!refresh && _token is not null && _expiresAt > DateTimeOffset.UtcNow.AddSeconds(90))
                 return _token;
             using var response = await http.PostAsJsonAsync(
-                config.TokenEndpoint, new TokenRequest(config.AppId, config.AppSecret), cancellationToken).ConfigureAwait(false);
+                config.TokenEndpoint, new TokenRequest(config.AppId, config.AppSecret), QQJson.Options, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"QQ token request failed: HTTP {(int)response.StatusCode}");
-            var payload = await response.Content.ReadFromJsonAsync<TokenResponse>(cancellationToken).ConfigureAwait(false)
+            var payload = await response.Content.ReadFromJsonAsync<TokenResponse>(QQJson.Options, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException("QQ token response is empty.");
             if (payload.Code is > 0)
             {

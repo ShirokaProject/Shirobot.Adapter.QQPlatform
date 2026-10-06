@@ -84,7 +84,7 @@ internal sealed class QQReplyTracker
         var quote = message.GetQuote();
         if (quote is null) return QQReplyResolution.None;
         var wire = message.Raw is JsonElement { ValueKind: JsonValueKind.Object } raw
-            ? raw.Deserialize<QQIncomingMessage>()
+            ? raw.Deserialize<QQIncomingMessage>(QQJson.Options)
             : null;
         var blocks = wire is null ? [] : QQQuoteElementParser.Parse(wire);
         var elementIndex = wire?.MessageElements?.FirstOrDefault()?.MessageIndex;

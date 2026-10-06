@@ -27,7 +27,7 @@ internal sealed class QQOpenApiClient
     public async Task<Uri> GetGatewayAsync(CancellationToken cancellationToken)
     {
         using var response = await _transport.SendAsync(HttpMethod.Get, QQApiRoutes.Gateway, null, cancellationToken).ConfigureAwait(false);
-        var body = await response.Content.ReadFromJsonAsync<GatewayResponse>(cancellationToken).ConfigureAwait(false);
+        var body = await response.Content.ReadFromJsonAsync<GatewayResponse>(QQJson.Options, cancellationToken).ConfigureAwait(false);
         if (body?.Url is not { Length: > 0 } url || !Uri.TryCreate(url, UriKind.Absolute, out var uri)
             || uri.Scheme is not ("wss" or "ws"))
             throw new InvalidDataException("QQ gateway response has no valid WebSocket URL.");
@@ -38,7 +38,7 @@ internal sealed class QQOpenApiClient
     {
         using var response = await _transport.SendAsync(HttpMethod.Get, QQApiRoutes.CurrentUser, null, cancellationToken)
             .ConfigureAwait(false);
-        return await response.Content.ReadFromJsonAsync<QQUser>(cancellationToken).ConfigureAwait(false)
+        return await response.Content.ReadFromJsonAsync<QQUser>(QQJson.Options, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("QQ current-user response is empty.");
     }
 
@@ -48,7 +48,7 @@ internal sealed class QQOpenApiClient
     public async Task<SentMessage> SendMessageAsync(string route, QQSendRequest message, CancellationToken cancellationToken = default)
     {
         using var response = await _transport.SendAsync(HttpMethod.Post, route, message, cancellationToken).ConfigureAwait(false);
-        var sent = await response.Content.ReadFromJsonAsync<QQSendResponse>(cancellationToken).ConfigureAwait(false)
+        var sent = await response.Content.ReadFromJsonAsync<QQSendResponse>(QQJson.Options, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("QQ message response is empty.");
         if (string.IsNullOrWhiteSpace(sent.Id))
             throw new InvalidDataException("QQ message response contains no message ID (it may be pending audit).");
@@ -73,7 +73,7 @@ internal sealed class QQOpenApiClient
     public async Task<string?> SendStreamFrameAsync(Channel channel, QQStreamRequest frame, CancellationToken cancellationToken = default)
     {
         using var response = await _transport.SendAsync(HttpMethod.Post, QQApiRoutes.StreamMessages(channel), frame, cancellationToken).ConfigureAwait(false);
-        var sent = await response.Content.ReadFromJsonAsync<QQSendResponse>(cancellationToken).ConfigureAwait(false);
+        var sent = await response.Content.ReadFromJsonAsync<QQSendResponse>(QQJson.Options, cancellationToken).ConfigureAwait(false);
         return sent?.Id;
     }
 
@@ -131,7 +131,7 @@ internal sealed class QQOpenApiClient
             throw new NotSupportedException("QQ Official media upload requires an HTTP(S) URL.");
         using var response = await _transport.SendAsync(HttpMethod.Post, QQApiRoutes.Files(channel),
             new QQUploadRequest(fileType, uri.AbsoluteUri, sendMessage, fileName), cancellationToken).ConfigureAwait(false);
-        return await response.Content.ReadFromJsonAsync<QQUploadResponse>(cancellationToken).ConfigureAwait(false)
+        return await response.Content.ReadFromJsonAsync<QQUploadResponse>(QQJson.Options, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("QQ media upload response is empty.");
     }
 
@@ -141,7 +141,7 @@ internal sealed class QQOpenApiClient
     public async Task<QQGroupInfo> GetGroupInfoAsync(string groupOpenId, CancellationToken cancellationToken = default)
     {
         using var response = await _transport.SendAsync(HttpMethod.Get, QQApiRoutes.GroupInfo(groupOpenId), null, cancellationToken).ConfigureAwait(false);
-        var info = await response.Content.ReadFromJsonAsync<QQGroupInfo>(cancellationToken).ConfigureAwait(false);
+        var info = await response.Content.ReadFromJsonAsync<QQGroupInfo>(QQJson.Options, cancellationToken).ConfigureAwait(false);
         if (info is null || !string.Equals(info.GroupOpenId, groupOpenId, StringComparison.Ordinal))
             throw new InvalidDataException("QQ group info response has a mismatched group_openid.");
         return info;
@@ -151,7 +151,7 @@ internal sealed class QQOpenApiClient
         CancellationToken cancellationToken = default)
     {
         using var response = await _transport.SendAsync(HttpMethod.Get, QQApiRoutes.GroupMembers(groupOpenId, cursor), null, cancellationToken).ConfigureAwait(false);
-        return await response.Content.ReadFromJsonAsync<QQGroupMemberPage>(cancellationToken).ConfigureAwait(false)
+        return await response.Content.ReadFromJsonAsync<QQGroupMemberPage>(QQJson.Options, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("QQ group member list response is empty.");
     }
 
@@ -159,7 +159,7 @@ internal sealed class QQOpenApiClient
         CancellationToken cancellationToken = default)
     {
         using var response = await _transport.SendAsync(HttpMethod.Get, QQApiRoutes.GroupMember(groupOpenId, memberOpenId), null, cancellationToken).ConfigureAwait(false);
-        return await response.Content.ReadFromJsonAsync<QQUser>(cancellationToken).ConfigureAwait(false)
+        return await response.Content.ReadFromJsonAsync<QQUser>(QQJson.Options, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("QQ group member response is empty.");
     }
 
@@ -200,7 +200,7 @@ internal sealed class QQOpenApiClient
         try
         {
             using var response = await _transport.SendAsync(HttpMethod.Put, QQApiRoutes.Interaction(interactionId),
-                new { code = (int)code }, cancellationToken).ConfigureAwait(false);
+                new System.Text.Json.Nodes.JsonObject { ["code"] = (int)code }, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -213,6 +213,16 @@ internal sealed class QQOpenApiClient
         }
     }
 
+
+    internal async Task<JsonElement> SendGroupRequestAsync(HttpMethod method, string route,
+        System.Text.Json.Nodes.JsonObject? body, CancellationToken cancellationToken)
+    {
+        using var response = await _transport.SendAsync(method, route, body, cancellationToken).ConfigureAwait(false);
+        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+        if (bytes.Length == 0) return default;
+        using var document = JsonDocument.Parse(bytes);
+        return document.RootElement.Clone();
+    }
 
     public async Task DeleteMessageAsync(Channel channel, string messageId, CancellationToken cancellationToken = default)
     {

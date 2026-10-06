@@ -9,12 +9,13 @@ internal static class QQOfficialMessageMapper
     public static QQMarkdown MapMarkdown(QOfficialMarkdown markdown) => markdown switch
     {
         QCustomMarkdown custom when !string.IsNullOrWhiteSpace(custom.Content) =>
-            new QQMarkdown { Content = custom.Content },
+            new QQMarkdown { Content = custom.Content, ForceVerifyImageResource = custom.ForceVerifyImageResource },
         QTemplateMarkdown template when !string.IsNullOrWhiteSpace(template.CustomTemplateId)
             && template.Params is not null && template.Params.All(ValidParameter) =>
             new QQMarkdown
             {
                 CustomTemplateId = template.CustomTemplateId,
+                ForceVerifyImageResource = template.ForceVerifyImageResource,
                 Params = template.Params.Select(p => new QQMarkdownParamWire(p.Key, p.Values)).ToArray()
             },
         _ => throw new ArgumentException("QQ official Markdown content or template is invalid.", nameof(markdown))
@@ -80,12 +81,25 @@ internal static class QQOfficialMessageMapper
                     throw new ArgumentException("Only specified-role buttons may set role IDs.", nameof(keyboard));
                 if (action.Anchor is < 0)
                     throw new ArgumentException("QQ command button anchor cannot be negative.", nameof(keyboard));
+                if (button.GroupId is not null && (string.IsNullOrWhiteSpace(button.GroupId)
+                    || action.Type != QKeyboardActionType.Callback))
+                    throw new ArgumentException("QQ button groups require callback buttons.", nameof(keyboard));
+                if (action.Modal is { } modal && (string.IsNullOrWhiteSpace(modal.Content)
+                    || modal.Content.EnumerateRunes().Count() > 40
+                    || (modal.ConfirmText?.EnumerateRunes().Count() ?? 0) > 4
+                    || (modal.CancelText?.EnumerateRunes().Count() ?? 0) > 4
+                    || modal.Content.Contains("http:", StringComparison.OrdinalIgnoreCase)
+                    || modal.Content.Contains("https:", StringComparison.OrdinalIgnoreCase)
+                    || modal.Content.Contains("www.", StringComparison.OrdinalIgnoreCase)))
+                    throw new ArgumentException("QQ button confirmation text is invalid.", nameof(keyboard));
                 buttons.Add(new QQButtonWire(button.Id,
                     new QQButtonRenderData(button.RenderData.Label, button.RenderData.VisitedLabel,
                         (int)button.RenderData.Style),
                     new QQButtonAction
                     {
                         Type = (int)action.Type,
+                        Modal = action.Modal is { } confirmation
+                            ? new QQButtonModal(confirmation.Content, confirmation.ConfirmText, confirmation.CancelText) : null,
                         Permission = new QQButtonPermission
                         {
                             Type = (int)permission.Type,
@@ -97,7 +111,7 @@ internal static class QQOfficialMessageMapper
                         Reply = action.Type == QKeyboardActionType.Command ? action.Reply : null,
                         Enter = action.Type == QKeyboardActionType.Command && action.Anchor is null ? action.Enter : null,
                         Anchor = action.Type == QKeyboardActionType.Command ? action.Anchor : null
-                    }));
+                    }) { GroupId = button.GroupId });
             }
             rows.Add(new QQKeyboardRowWire(buttons));
         }

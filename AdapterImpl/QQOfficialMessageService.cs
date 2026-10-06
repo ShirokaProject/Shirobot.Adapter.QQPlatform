@@ -14,23 +14,33 @@ internal sealed class QQOfficialMessageService(
 {
     private const long MaxUploadSize = 200L * 1024 * 1024;
 
-    public Task<string> SendAsync(QOfficialMessageTarget target, QOfficialMessage message,
+    public async Task<string> SendAsync(QOfficialMessageTarget target, QOfficialMessage message,
         QOfficialMessageReply? reply = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(message);
-        return message switch
+        cancellationToken.ThrowIfCancellationRequested();
+        switch (message)
         {
-            QOfficialTextMessage text => SendTextAsync(target, text.Content, reply),
-            QOfficialMarkdownMessage markdown => SendMarkdownAsync(target, markdown.Content,
-                markdown.Keyboard, reply),
-            QOfficialMediaSourceMessage media => media.Caption is null
-                ? UploadAndSendAsync(target, media.Type, media.Content, media.FileName, reply, cancellationToken)
-                : UploadAndSendWithCaptionAsync(target, media.Type, media.Content, media.FileName, media.Caption,
-                    reply, cancellationToken),
-            QOfficialUploadedMediaMessage media => SendMediaAsync(target, media.UploadedMedia,
-                media.Caption ?? " ", reply),
-            _ => throw new NotSupportedException($"Unsupported QQ official message type: {message.GetType().Name}.")
-        };
+            case QOfficialTextMessage text:
+                ArgumentException.ThrowIfNullOrWhiteSpace(text.Content);
+                return (await SendToTargetAsync(target, new QQSendRequest { MessageType = 0, Content = text.Content },
+                    reply, text.Content, cancellationToken).ConfigureAwait(false)).MessageId;
+            case QOfficialMarkdownMessage markdown:
+                if (!CanSendMarkdown(target, markdown.Content, markdown.Keyboard))
+                    throw new NotSupportedException("QQ official Markdown target, content or keyboard is not supported.");
+                return (await SendToTargetAsync(target, new QQSendRequest
+                {
+                    MessageType = 2, Markdown = QQOfficialMessageMapper.MapMarkdown(markdown.Content),
+                    Keyboard = QQOfficialMessageMapper.MapKeyboard(markdown.Keyboard, target.Scene == QOfficialMessageScene.Channel)
+                }, reply, "[Markdown]", cancellationToken).ConfigureAwait(false)).MessageId;
+            case QOfficialMediaSourceMessage media:
+                return await UploadAndSendCoreAsync(target, media.Type, media.Content, media.FileName,
+                    string.IsNullOrWhiteSpace(media.Caption) ? null : media.Caption, reply, cancellationToken).ConfigureAwait(false);
+            case QOfficialUploadedMediaMessage media:
+                return await SendMediaAsync(target, media.UploadedMedia, media.Caption, reply, cancellationToken).ConfigureAwait(false);
+            default:
+                throw new NotSupportedException($"Unsupported QQ official message type: {message.GetType().Name}.");
+        }
     }
 
     public async Task<QOfficialMedia> UploadAsync(QOfficialMessageTarget target, QOfficialMediaType type,
@@ -50,7 +60,7 @@ internal sealed class QQOfficialMessageService(
 
     public async Task<string> SendAsync(QOfficialMessageTarget target, QOfficialMedia media,
         QOfficialMessageReply? reply = null)
-        => await SendMediaAsync(target, media, " ", reply).ConfigureAwait(false);
+        => await SendMediaAsync(target, media, null, reply).ConfigureAwait(false);
 
     public async Task<string> SendWithCaptionAsync(QOfficialMessageTarget target, QOfficialMedia media,
         string content, QOfficialMessageReply? reply = null)
@@ -60,14 +70,14 @@ internal sealed class QQOfficialMessageService(
     }
 
     private async Task<string> SendMediaAsync(QOfficialMessageTarget target, QOfficialMedia media,
-        string content, QOfficialMessageReply? reply)
+        string? content, QOfficialMessageReply? reply, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(media);
         if (string.IsNullOrWhiteSpace(media.FileInfo)) throw new ArgumentException("Media file_info is required.", nameof(media));
         if (!Enum.IsDefined(media.Type)) throw new ArgumentOutOfRangeException(nameof(media));
         var sent = await messages.SendOfficialAsync(ResolveMediaChannel(target),
             new QQSendRequest { MessageType = 7, Content = content, Media = new QQMedia(media.FileInfo) },
-            reply, $"[{media.Type}]").ConfigureAwait(false);
+            reply, $"[{media.Type}]", cancellationToken).ConfigureAwait(false);
         return sent.MessageId;
     }
 
@@ -105,8 +115,8 @@ internal sealed class QQOfficialMessageService(
             var fileInfo = await api.UploadLocalAsync(channel, (int)type, path, Path.GetFileName(fileName),
                 cancellationToken).ConfigureAwait(false);
             var result = await messages.SendOfficialAsync(channel,
-                new QQSendRequest { MessageType = 7, Content = messageContent ?? " ", Media = new QQMedia(fileInfo) },
-                reply, $"[{type}]").ConfigureAwait(false);
+                new QQSendRequest { MessageType = 7, Content = messageContent, Media = new QQMedia(fileInfo) },
+                reply, $"[{type}]", cancellationToken).ConfigureAwait(false);
             return result.MessageId;
         }
         finally { File.Delete(path); }
@@ -281,11 +291,11 @@ internal sealed class QQOfficialMessageService(
     }
 
     private Task<SentMessage> SendToTargetAsync(QOfficialMessageTarget target, QQSendRequest request,
-        QOfficialMessageReply? reply, string description)
+        QOfficialMessageReply? reply, string description, CancellationToken cancellationToken = default)
     {
         if (target.Scene is QOfficialMessageScene.Direct or QOfficialMessageScene.Group)
-            return messages.SendOfficialAsync(ResolveChannel(target), request, reply, description);
-        return messages.SendOfficialAsync(QQApiRoutes.Messages(target), target.Id, request, reply, description);
+            return messages.SendOfficialAsync(ResolveChannel(target), request, reply, description, cancellationToken);
+        return messages.SendOfficialAsync(QQApiRoutes.Messages(target), target.Id, request, reply, description, cancellationToken);
     }
 
     private (Channel Channel, string MessageId) ResolveDirectReply(

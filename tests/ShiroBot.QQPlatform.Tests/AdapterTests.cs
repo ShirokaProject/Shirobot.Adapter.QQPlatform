@@ -890,6 +890,7 @@ public sealed class AdapterTests
         Assert.EndsWith("/v2/groups/group-1/files", handler.Requests[1].Uri);
         Assert.False(JsonDocument.Parse(handler.Requests[1].Body).RootElement.GetProperty("srv_send_msg").GetBoolean());
         Assert.EndsWith("/v2/groups/group-1/messages", handler.Requests[2].Uri);
+        Assert.False(JsonDocument.Parse(handler.Requests[2].Body).RootElement.TryGetProperty("content", out _));
     }
 
     [Fact]
@@ -915,9 +916,13 @@ public sealed class AdapterTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task LocalGroupFileUsesOfficialChunkedUpload(bool recentReply)
+    [InlineData(false, "local")]
+    [InlineData(true, "local")]
+    [InlineData(false, "base64:")]
+    [InlineData(true, "base64:")]
+    [InlineData(false, "base64://")]
+    [InlineData(true, "base64://")]
+    public async Task LocalGroupFileUsesOfficialChunkedUpload(bool recentReply, string sourceKind)
     {
         var path = Path.GetTempFileName();
         try
@@ -936,9 +941,14 @@ public sealed class AdapterTests
                 });
 
             var sent = await messages.SendMessageAsync(Channel.Group("group-1"),
-                [new FileSegment(path) { FileName = "small.bin" }]);
+                [new FileSegment(sourceKind == "local" ? path : sourceKind + Convert.ToBase64String(bytes))
+                    { FileName = "small.bin" }]);
 
             Assert.Equal(recentReply ? "outgoing-1" : "direct-media-1", sent.MessageId);
+            var cached = await messages.GetMessageAsync(Channel.Group("group-1"), sent.MessageId);
+            var cachedFile = Assert.IsType<FileSegment>(Assert.Single(cached!.Segments));
+            Assert.Equal("small.bin", cachedFile.FileName);
+            Assert.Equal(sourceKind == "local" ? path : "base64:[内容已省略]", cachedFile.Uri);
             Assert.Equal(recentReply ? 8 : 7, handler.Requests.Count);
             Assert.EndsWith("/v2/groups/group-1/upload_prepare", handler.Requests[1].Uri);
             var prepare = JsonDocument.Parse(handler.Requests[1].Body).RootElement;
@@ -992,6 +1002,7 @@ public sealed class AdapterTests
             Assert.Equal(7, send.GetProperty("msg_type").GetInt32());
             Assert.Equal("incoming", send.GetProperty("msg_id").GetString());
             Assert.Equal("file-1", send.GetProperty("media").GetProperty("file_info").GetString());
+            Assert.False(send.TryGetProperty("content", out _));
         }
     }
 

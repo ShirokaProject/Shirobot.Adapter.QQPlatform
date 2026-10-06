@@ -8,7 +8,7 @@ namespace ShiroBot.Adapter.QQPlatform.Protocol;
 /// <summary>Centralizes QQBot authorization, token renewal and HTTP retry policy.</summary>
 internal sealed class QQApiTransport(HttpClient http, QQPlatformConfig config, QQTokenProvider tokens)
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Json = QQJson.Options;
 
     public async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, object? body, CancellationToken cancellationToken)
     {
@@ -62,7 +62,7 @@ internal sealed class QQApiTransport(HttpClient http, QQPlatformConfig config, Q
             var failedStatus = response.StatusCode;
             response.Dispose();
             throw new HttpRequestException(
-                $"QQ OpenAPI {path} failed: HTTP {(int)failedStatus}; {error.Message ?? "unknown error"}",
+                $"QQ OpenAPI {path} failed: HTTP {(int)failedStatus}; {QQLogSanitizer.RedactBase64(error.Message ?? "unknown error")}",
                 null, failedStatus);
         }
         throw new InvalidOperationException("Unreachable QQ retry state.");
@@ -117,7 +117,7 @@ internal sealed class QQApiTransport(HttpClient http, QQPlatformConfig config, Q
 
 internal sealed class QQApiException(string path, HttpStatusCode status, int errorCode, string? detail, string? traceId)
     : HttpRequestException(
-        $"QQ OpenAPI {path} failed: HTTP {(int)status}, err_code {errorCode}; {detail ?? "no details"}; trace_id {traceId ?? "unknown"}",
+        $"QQ OpenAPI {path} failed: HTTP {(int)status}, err_code {errorCode}; {QQLogSanitizer.RedactBase64(detail ?? "no details")}; trace_id {traceId ?? "unknown"}",
         null, status)
 {
     public int ErrorCode { get; } = errorCode;

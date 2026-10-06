@@ -28,7 +28,7 @@ internal sealed class QQChunkedUploadClient(QQApiTransport transport, HttpClient
         using var prepareResponse = await transport.SendAsync(HttpMethod.Post, QQApiRoutes.UploadPrepare(channel),
             new QQUploadPrepareRequest(fileType, file.Length.ToString(CultureInfo.InvariantCulture),
                 fileName, hashes.Md5, hashes.Sha1, hashes.Md5First10M), cancellationToken).ConfigureAwait(false);
-        var prepared = await prepareResponse.Content.ReadFromJsonAsync<QQUploadPrepareResponse>(cancellationToken)
+        var prepared = await prepareResponse.Content.ReadFromJsonAsync<QQUploadPrepareResponse>(QQJson.Options, cancellationToken)
             .ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(prepared?.UploadId) || prepared.BlockSize <= 0 || prepared.Parts is null)
             throw new InvalidDataException("QQ upload_prepare response is incomplete.");
@@ -64,7 +64,7 @@ internal sealed class QQChunkedUploadClient(QQApiTransport transport, HttpClient
         using var completeResponse = await transport.SendAsync(HttpMethod.Post, QQApiRoutes.Files(channel),
             new QQUploadCompleteRequest(fileType, sendMessage, fileName, prepared.UploadId),
             cancellationToken).ConfigureAwait(false);
-        return await completeResponse.Content.ReadFromJsonAsync<QQUploadResponse>(cancellationToken).ConfigureAwait(false)
+        return await completeResponse.Content.ReadFromJsonAsync<QQUploadResponse>(QQJson.Options, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("QQ file upload completion response is empty.");
     }
 

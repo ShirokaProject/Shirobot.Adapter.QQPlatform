@@ -13,9 +13,34 @@ internal static class QQEventTranslator
     {
         if (payload.EventType is not { Length: > 0 } type) return null;
         var raw = payload.Data.Clone();
+        if (type is "GROUP_MEMBER_ADD" or "GROUP_MEMBER_REMOVE" or "GROUP_JOIN_REQUEST")
+        {
+            var groupId = QQOfficialGroupMapper.Text(raw, "group_openid");
+            var memberId = QQOfficialGroupMapper.Text(raw, "member_openid");
+            if (string.IsNullOrWhiteSpace(groupId) || string.IsNullOrWhiteSpace(memberId)) return null;
+            if (type == "GROUP_JOIN_REQUEST")
+            {
+                if (string.IsNullOrWhiteSpace(QQOfficialGroupMapper.Text(raw, "join_request_id"))) return null;
+                return new PlatformEvent
+                {
+                    Platform = Platform, SelfId = selfId, Channel = Channel.Group(groupId),
+                    Kind = QEventKinds.OfficialGroupJoinRequest,
+                    Raw = QQOfficialGroupMapper.JoinRequest(raw, groupId, payload.Id, selfId)
+                };
+            }
+            var member = new QOfficialGroupMemberEvent
+            {
+                GroupOpenId = groupId, MemberOpenId = memberId,
+                UserOpenId = QQOfficialGroupMapper.Text(raw, "user_openid"), EventId = payload.Id,
+                Time = QQOfficialGroupMapper.Time(raw), SelfId = long.TryParse(selfId, out var numeric) ? numeric : 0
+            };
+            return type == "GROUP_MEMBER_ADD"
+                ? new MemberJoinedEvent { Platform = Platform, SelfId = selfId, Channel = Channel.Group(groupId), UserId = memberId, Raw = member }
+                : new MemberLeftEvent { Platform = Platform, SelfId = selfId, Channel = Channel.Group(groupId), UserId = memberId, Raw = member };
+        }
         if (type == "INTERACTION_CREATE")
         {
-            var interaction = raw.Deserialize<QQInteractionData>();
+            var interaction = raw.Deserialize<QQInteractionData>(QQJson.Options);
             if (interaction is not { Type: 11, Id: { Length: > 0 }, Data.Resolved.ButtonData: { Length: > 0 } })
                 return null;
             var isGroup = interaction.ChatType == 1 || interaction.Scene == "group";
@@ -51,7 +76,7 @@ internal static class QQEventTranslator
         }
         if (type is "GROUP_AT_MESSAGE_CREATE" or "GROUP_MESSAGE_CREATE" or "C2C_MESSAGE_CREATE")
         {
-            var message = raw.Deserialize<QQIncomingMessage>();
+            var message = raw.Deserialize<QQIncomingMessage>(QQJson.Options);
             if (message is null || string.IsNullOrWhiteSpace(message.Id)) return null;
             var isGroup = type is "GROUP_AT_MESSAGE_CREATE" or "GROUP_MESSAGE_CREATE";
             var senderId = isGroup

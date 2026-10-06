@@ -162,6 +162,7 @@ internal sealed record QQStreamRequest
 internal sealed record QQMedia([property: JsonPropertyName("file_info")] string FileInfo);
 internal sealed record QQMarkdown
 {
+    [JsonPropertyName("force_verify_image_resource"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? ForceVerifyImageResource { get; init; }
     [JsonPropertyName("content"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Content { get; init; }
     [JsonPropertyName("custom_template_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? CustomTemplateId { get; init; }
     [JsonPropertyName("params"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public IReadOnlyList<QQMarkdownParamWire>? Params { get; init; }
@@ -179,13 +180,21 @@ internal sealed record QQKeyboardRowWire([property: JsonPropertyName("buttons")]
 internal sealed record QQButtonWire(
     [property: JsonPropertyName("id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Id,
     [property: JsonPropertyName("render_data")] QQButtonRenderData RenderData,
-    [property: JsonPropertyName("action")] QQButtonAction Action);
+    [property: JsonPropertyName("action")] QQButtonAction Action)
+{
+    [JsonPropertyName("group_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? GroupId { get; init; }
+}
 internal sealed record QQButtonRenderData(
     [property: JsonPropertyName("label")] string Label,
     [property: JsonPropertyName("visited_label")] string VisitedLabel,
     [property: JsonPropertyName("style")] int Style);
+internal sealed record QQButtonModal(
+    [property: JsonPropertyName("content")] string Content,
+    [property: JsonPropertyName("confirm_text"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ConfirmText,
+    [property: JsonPropertyName("cancel_text"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CancelText);
 internal sealed record QQButtonAction
 {
+    [JsonPropertyName("modal"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQButtonModal? Modal { get; init; }
     [JsonPropertyName("type")] public int Type { get; init; }
     [JsonPropertyName("permission")] public required QQButtonPermission Permission { get; init; }
     [JsonPropertyName("data")] public required string Data { get; init; }

@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using ShiroBot.Adapter.QQPlatform.Wire;
 using ShiroBot.SDK.Plugin;
@@ -145,24 +146,27 @@ internal sealed class QQGatewayClient(
         await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
         var hello = await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false);
         if (hello.Op != 10) throw new InvalidDataException("QQ gateway did not send Hello.");
-        var interval = hello.Data.Deserialize<HelloData>()?.HeartbeatInterval ?? 0;
+        var interval = hello.Data.Deserialize<HelloData>(QQJson.Options)?.HeartbeatInterval ?? 0;
         if (interval <= 0) throw new InvalidDataException("QQ gateway sent an invalid heartbeat interval.");
 
         var sendGate = new SemaphoreSlim(1, 1);
-        async Task SendAsync(object envelope, CancellationToken ct)
+        async Task SendAsync(JsonObject envelope, CancellationToken ct)
         {
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(envelope);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(envelope, QQJson.Options);
             await sendGate.WaitAsync(ct).ConfigureAwait(false);
             try { await socket.SendAsync(bytes, WebSocketMessageType.Text, true, ct).ConfigureAwait(false); }
             finally { sendGate.Release(); }
         }
 
         if (_sessionId is not null && _sequence is not null)
-            await SendAsync(new { op = 6, d = new { token = $"QQBot {token}", session_id = _sessionId, seq = _sequence } }, cancellationToken).ConfigureAwait(false);
+            await SendAsync(new JsonObject { ["op"] = 6, ["d"] = new JsonObject
+                { ["token"] = $"QQBot {token}", ["session_id"] = _sessionId, ["seq"] = _sequence } }, cancellationToken).ConfigureAwait(false);
         else
-            await SendAsync(new { op = 2, d = new { token = $"QQBot {token}", intents = config.Intents,
-                shard = new[] { config.ShardId, config.ShardCount },
-                properties = new Dictionary<string, string> { ["$os"] = Environment.OSVersion.Platform.ToString(), ["$browser"] = "shirobot", ["$device"] = "shirobot" } } }, cancellationToken).ConfigureAwait(false);
+            await SendAsync(new JsonObject { ["op"] = 2, ["d"] = new JsonObject
+                { ["token"] = $"QQBot {token}", ["intents"] = config.EffectiveIntents,
+                  ["shard"] = new JsonArray(config.ShardId, config.ShardCount),
+                  ["properties"] = new JsonObject { ["$os"] = Environment.OSVersion.Platform.ToString(),
+                      ["$browser"] = "shirobot", ["$device"] = "shirobot" } } }, cancellationToken).ConfigureAwait(false);
 
         using var connected = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var awaitingAck = false;
@@ -180,7 +184,7 @@ internal sealed class QQGatewayClient(
                     return;
                 }
                 Volatile.Write(ref awaitingAck, true);
-                await SendAsync(new { op = 1, d = _sequence }, connected.Token).ConfigureAwait(false);
+                await SendAsync(new JsonObject { ["op"] = 1, ["d"] = _sequence }, connected.Token).ConfigureAwait(false);
             }
         }, connected.Token);
 
@@ -195,7 +199,7 @@ internal sealed class QQGatewayClient(
                     case 0:
                         if (payload.EventType == "READY")
                         {
-                            var ready = payload.Data.Deserialize<ReadyData>();
+                            var ready = payload.Data.Deserialize<ReadyData>(QQJson.Options);
                             _sessionId = ready?.SessionId;
                             _connectedSuccessfully = true;
                             onReady(ready?.User);
@@ -210,7 +214,7 @@ internal sealed class QQGatewayClient(
                         onReceive?.Invoke(payload);
                         await _queue!.Writer.WriteAsync(payload, connected.Token).ConfigureAwait(false);
                         break;
-                    case 1: await SendAsync(new { op = 1, d = _sequence }, connected.Token).ConfigureAwait(false); break;
+                    case 1: await SendAsync(new JsonObject { ["op"] = 1, ["d"] = _sequence }, connected.Token).ConfigureAwait(false); break;
                     case 7: throw new IOException("QQ gateway requested reconnect.");
                     case 9:
                         if (payload.Data.ValueKind != JsonValueKind.True)
@@ -251,7 +255,7 @@ internal sealed class QQGatewayClient(
             buffer.Write(chunk, 0, part.Count);
             if (buffer.Length > 1024 * 1024) throw new InvalidDataException("QQ gateway payload exceeds 1 MiB.");
         } while (!part.EndOfMessage);
-        return JsonSerializer.Deserialize<GatewayPayload>(buffer.ToArray())
+        return JsonSerializer.Deserialize<GatewayPayload>(buffer.ToArray(), QQJson.Options)
             ?? throw new InvalidDataException("QQ gateway payload is empty.");
     }
 }

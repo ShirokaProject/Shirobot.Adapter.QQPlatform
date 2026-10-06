@@ -37,6 +37,47 @@ startup_timeout_seconds = 30
 | `reconnect_minimum_seconds` / `reconnect_maximum_seconds` | 重连退避的最小 / 最大等待时间，单位秒，默认 `2` / `30`；最小值必须大于 `0`，最大值不得小于最小值。 |
 | `startup_timeout_seconds` | 启动连接超时时间，单位秒，默认 `30`，必须大于 `0`。 |
 
+## 媒体文件发送
+
+图片、视频、语音和文件消息段支持 HTTP(S) URL、本地绝对/相对路径、`file://` URI，以及 `base64:内容` / `base64://内容`。Base64 解码后通过本地文件分片上传，上传结束或失败后自动删除临时文件，解码后的大小须为 1 字节至 200 MB。
+
+Base64 使用原始字符串的内存切片，分块解码并写入临时文件，不复制完整编码字符串或创建完整解码字节数组。解码前检查大小，写入时再次限制大小；解码缓冲区大小固定。插件生成的原始 Base64 字符串仍会占用内存，大文件建议使用本地路径或文件流。
+
+已发送消息的回复缓存仅保留 Base64 媒体的类型、文件名和内容省略标记，不保留文件内容，不能用缓存中的该 URI 重新发送。适配器 API 错误会省略 Base64 内容；新版宿主也会在插件和适配器的日志入口统一省略此类内容。
+
+```csharp
+new FileSegment("base64:" + Convert.ToBase64String(bytes)) { FileName = "report.pdf" }
+```
+
+建议指定实际的 `FileName`。未指定时，图片、视频、语音和文件分别使用 `image.png`、`video.mp4`、`audio.silk` 和 `file.bin`；默认名称不会转换文件格式。
+
 ## 许可证
 
 [GPL3](./LICENSE)
+
+### 群成员事件与官方群管理
+
+`GROUP_MEMBER_ADD` / `GROUP_MEMBER_REMOVE` 映射为 SDK 的 `MemberJoinedEvent` / `MemberLeftEvent`，
+`Raw` 为 `QOfficialGroupMemberEvent`，以 `member_openid` 作为群内用户 ID，另保留 `user_openid`。
+`GROUP_JOIN_REQUEST` 映射为 `PlatformEvent`，Kind 为 `QEventKinds.OfficialGroupJoinRequest`，
+Raw 为 `QOfficialJoinRequest`，保留申请 ID、验证消息/问答、邀请人、风险提示及自动审批策略 ID。
+在适配器配置中开启 `subscribe_group_member_events = true`，或在 `intents` 中加入 `1 << 24`，
+即可订阅上述事件。开关默认关闭；入群申请事件需要机器人是群管理员。
+
+通过 `context.GetAdapterExtension<IQOfficialGroupApi>()` 获取官方群管理接口，支持：
+
+- 分页查询入群申请、同意或拒绝（可提供拒绝理由及同时拉黑）。
+- 查询群禁言状态、定时/周期禁言规则，以及单次最多 20 人的批量禁言/解除禁言。
+- 自动审批策略的分页查询、创建、修改、删除、触发执行及白名单号码增删。
+
+群管理需要管理员身份及 QQ 平台开放的接口权限；不满足权限时平台错误会返回调用方。
+批量禁言通过 `UpdateExisting` 选择 add/update，零时长发送 del；只调用一次，不自动重复管理操作。
+策略执行为异步任务，接口成功只代表已触发扫描。
+
+按钮支持 `GroupId`（仅回调按钮）、`QKeyboardModal` 二次确认和 `Red` / `BlueFilled` 样式。
+Markdown 可设置 `ForceVerifyImageResource = true`，图片转存失败时拒绝整条消息。
+通用消息发送支持文字加单个媒体；纯媒体仍不填充空格正文。
+类型化 `IQOfficialMessageApi.SendAsync` 的取消令牌覆盖最终发送请求。
+
+这些新能力新增了共享 QQ Model 类型，测试时需同步更新宿主和适配器；旧插件无需重新编译，
+使用新能力的插件需引用更新后的 `ShiroBot.Model.QQ`。

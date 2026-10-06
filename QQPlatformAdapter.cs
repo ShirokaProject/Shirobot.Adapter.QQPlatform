@@ -33,6 +33,7 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
     private QQMessageService? _messages;
     private QQOfficialMessageService? _officialMessages;
     private QQOpenApiClient? _api;
+    private QQOfficialGroupService? _officialGroups;
     private string? _selfId;
     private QQPlatformConfig? _config;
 
@@ -49,7 +50,7 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
     public IEventService Event => _events;
 
     public TService? GetExtension<TService>() where TService : class =>
-        _officialMessages as TService ?? _messages as TService ?? this as TService;
+        _officialMessages as TService ?? _officialGroups as TService ?? _messages as TService ?? this as TService;
 
     public async Task StartAsync()
     {
@@ -66,6 +67,7 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
         var tokens = new QQTokenProvider(_http, config);
         var api = new QQOpenApiClient(_http, config, tokens, _uploadHttp);
         _api = api;
+        _officialGroups = new QQOfficialGroupService(api);
         _channels.Attach(api);
         try
         {
@@ -142,6 +144,7 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
         _messages = null;
         _officialMessages = null;
         _api = null;
+        _officialGroups = null;
         _channels.Attach(null);
         _http?.Dispose();
         _http = null;
@@ -202,7 +205,7 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
     private void AcknowledgeInteractionEarly(GatewayPayload payload)
     {
         if (payload.EventType != "INTERACTION_CREATE" || _api is not { } api) return;
-        var interaction = payload.Data.Deserialize<QQInteractionData>();
+        var interaction = payload.Data.Deserialize<QQInteractionData>(QQJson.Options);
         if (interaction is not { Type: 11, Id: { Length: > 0 } id }) return;
         _ = Task.Run(async () =>
         {

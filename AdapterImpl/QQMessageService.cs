@@ -119,15 +119,9 @@ internal sealed class QQMessageService(
         QQSendRequest request;
         if (resource is not null)
         {
-            if (content.Length > 0)
-                throw new NotSupportedException("QQ Official media and text must be sent as separate messages.");
-            Uri.TryCreate(resource.Uri, UriKind.Absolute, out var sourceUri);
-            var url = sourceUri?.Scheme is "http" or "https" ? sourceUri : null;
-            var path = Path.IsPathFullyQualified(resource.Uri) ? resource.Uri
-                : sourceUri?.Scheme == Uri.UriSchemeFile ? sourceUri.LocalPath
-                : sourceUri is null ? Path.GetFullPath(resource.Uri) : null;
-            if (url is null && path is null)
-                throw new NotSupportedException("QQ Official media source must be an HTTP(S) URL or a local file path.");
+            using var source = await QQMediaSource.ResolveAsync(resource).ConfigureAwait(false);
+            var url = source.Url;
+            var path = source.Path;
             var fileType = resource switch
             {
                 ImageSegment => 1,
@@ -136,9 +130,7 @@ internal sealed class QQMessageService(
                 FileSegment => 4,
                 _ => throw new NotSupportedException($"QQ Official cannot send resource {resource.GetType().Name}.")
             };
-            var fileName = resource.FileName ?? (path is not null
-                ? Path.GetFileName(path)
-                : Uri.UnescapeDataString(Path.GetFileName(url!.AbsolutePath)));
+            var fileName = source.FileName;
             if (channel.Type == ChannelType.Group && replyToMessageId is null && content.Length == 0)
             {
                 var sent = path is not null
@@ -157,7 +149,7 @@ internal sealed class QQMessageService(
             request = new QQSendRequest
             {
                 MessageType = 7,
-                Content = content.Length > 0 ? content.ToString() : " ",
+                Content = content.Length > 0 ? content.ToString() : null,
                 Media = new QQMedia(fileInfo)
             };
         }
@@ -239,7 +231,7 @@ internal sealed class QQMessageService(
     }
 
     internal Task<SentMessage> SendOfficialAsync(Channel channel, QQSendRequest request,
-        QOfficialMessageReply? reply, string description)
+        QOfficialMessageReply? reply, string description, CancellationToken cancellationToken = default)
     {
         if (reply is not null)
         {
@@ -255,19 +247,19 @@ internal sealed class QQMessageService(
                 MessageSequence = reply.MessageSequence
             };
         }
-        return SendOfficialAndRememberAsync(channel, request, reply, description);
+        return SendOfficialAndRememberAsync(channel, request, reply, description, cancellationToken);
     }
 
     private async Task<SentMessage> SendOfficialAndRememberAsync(Channel channel, QQSendRequest request,
-        QOfficialMessageReply? reply, string description)
+        QOfficialMessageReply? reply, string description, CancellationToken cancellationToken = default)
     {
-        var sent = await SendAndLogAsync(channel, request, description).ConfigureAwait(false);
+        var sent = await SendAndLogAsync(channel, request, description, cancellationToken: cancellationToken).ConfigureAwait(false);
         RememberSentMessage(channel, sent, request.MessageId, GetReplyContextSegments(request));
         return sent;
     }
 
     internal async Task<SentMessage> SendOfficialAsync(string route, string targetName, QQSendRequest request,
-        QOfficialMessageReply? reply, string description)
+        QOfficialMessageReply? reply, string description, CancellationToken cancellationToken = default)
     {
         if (reply is not null)
         {
@@ -279,15 +271,15 @@ internal sealed class QQMessageService(
             if (hasMessage) request = WithReply(request, $"{route}:{reply.MessageId}", reply.MessageId!, reply.MessageSequence);
             else request = request with { EventId = reply.EventId, MessageSequence = reply.MessageSequence };
         }
-        var sent = await api.SendMessageAsync(route, request).ConfigureAwait(false);
+        var sent = await api.SendMessageAsync(route, request, cancellationToken).ConfigureAwait(false);
         logger?.Info($"已发送 QQ 官方消息到 {targetName}: {description.Replace("\r", "\\r").Replace("\n", "\\n")}");
         return sent;
     }
 
     private async Task<SentMessage> SendAndLogAsync(Channel channel, QQSendRequest request, string description,
-        IReadOnlyList<MessageSegment>? sentSegments = null)
+        IReadOnlyList<MessageSegment>? sentSegments = null, CancellationToken cancellationToken = default)
     {
-        var sent = await api.SendMessageAsync(channel, request).ConfigureAwait(false);
+        var sent = await api.SendMessageAsync(channel, request, cancellationToken).ConfigureAwait(false);
         if (sentSegments is not null)
             RememberSentMessage(channel, sent, request.MessageId, sentSegments);
         var target = string.IsNullOrWhiteSpace(channel.Name) ? channel.Id : channel.Name;
@@ -308,11 +300,16 @@ internal sealed class QQMessageService(
             MessageId = sent.MessageId,
             Channel = channel,
             Sender = self ?? new User("qq-official-bot") { Name = "机器人", IsBot = true },
-            Segments = segments.Where(segment => segment is not QuoteSegment).ToArray(),
+            Segments = segments.Where(segment => segment is not QuoteSegment).Select(SnapshotSegment).ToArray(),
             Timestamp = sent.Timestamp ?? DateTimeOffset.UtcNow,
         };
         _replies.Remember(snapshot, api.TakeSentReferenceIndex(sent.MessageId), chain);
     }
+
+    private static MessageSegment SnapshotSegment(MessageSegment segment) =>
+        segment is ResourceSegment resource && resource.Uri.StartsWith("base64:", StringComparison.OrdinalIgnoreCase)
+            ? resource with { Uri = "base64:[内容已省略]" }
+            : segment;
 
     private static IReadOnlyList<MessageSegment> GetReplyContextSegments(QQSendRequest request)
     {
@@ -321,7 +318,7 @@ internal sealed class QQMessageService(
         if (request.MessageType == 2 && !string.IsNullOrEmpty(request.Markdown?.Content))
             return [new TextSegment(request.Markdown.Content)];
         return [new RawSegment(QQEventTranslator.Platform, "sent_message",
-            JsonSerializer.SerializeToElement(request))];
+            JsonSerializer.SerializeToElement(request, QQJson.Options))];
     }
 
     private static JsonElement? AddResolvedReplyChain(object? raw, IReadOnlyList<QQQuotedMessage> chain)
@@ -329,28 +326,28 @@ internal sealed class QQMessageService(
         if (raw is not JsonElement { ValueKind: JsonValueKind.Object } rawEvent || chain.Count == 0) return null;
         var document = JsonNode.Parse(rawEvent.GetRawText())?.AsObject();
         if (document is null) return null;
-        document["resolved_reply_chain"] = JsonSerializer.SerializeToNode(chain.Select(item => new
+        document["resolved_reply_chain"] = new JsonArray(chain.Select(item => (JsonNode)new JsonObject
         {
-            messageId = item.MessageId,
-            sender = new { id = item.Sender.Id, name = item.Sender.Name, isBot = item.Sender.IsBot },
-            timestamp = item.Timestamp,
-            segments = item.Segments.Select(ToRawSegment).ToArray()
-        }));
+            ["messageId"] = item.MessageId,
+            ["sender"] = new JsonObject { ["id"] = item.Sender.Id, ["name"] = item.Sender.Name, ["isBot"] = item.Sender.IsBot },
+            ["timestamp"] = item.Timestamp,
+            ["segments"] = new JsonArray(item.Segments.Select(ToRawSegment).ToArray())
+        }).ToArray());
         using var enriched = JsonDocument.Parse(document.ToJsonString());
         return enriched.RootElement.Clone();
     }
 
-    private static object ToRawSegment(MessageSegment segment) => segment switch
+    private static JsonNode ToRawSegment(MessageSegment segment) => segment switch
     {
-        TextSegment text => new { type = "text", text = text.Text },
-        ImageSegment image => new { type = "image", url = image.Uri, filename = image.FileName },
-        VideoSegment video => new { type = "video", url = video.Uri, filename = video.FileName },
-        AudioSegment audio => new { type = "audio", url = audio.Uri, filename = audio.FileName },
-        FileSegment file => new { type = "file", url = file.Uri, filename = file.FileName },
-        EmojiSegment emoji => new { type = "emoji", id = emoji.Id, name = emoji.Name },
-        MentionSegment mention => new { type = "mention", id = mention.UserId, name = mention.DisplayName },
-        MentionAllSegment => new { type = "mention_all" },
-        _ => new { type = segment.GetType().Name }
+        TextSegment text => new JsonObject { ["type"] = "text", ["text"] = text.Text },
+        ImageSegment image => new JsonObject { ["type"] = "image", ["url"] = image.Uri, ["filename"] = image.FileName },
+        VideoSegment video => new JsonObject { ["type"] = "video", ["url"] = video.Uri, ["filename"] = video.FileName },
+        AudioSegment audio => new JsonObject { ["type"] = "audio", ["url"] = audio.Uri, ["filename"] = audio.FileName },
+        FileSegment file => new JsonObject { ["type"] = "file", ["url"] = file.Uri, ["filename"] = file.FileName },
+        EmojiSegment emoji => new JsonObject { ["type"] = "emoji", ["id"] = emoji.Id, ["name"] = emoji.Name },
+        MentionSegment mention => new JsonObject { ["type"] = "mention", ["id"] = mention.UserId, ["name"] = mention.DisplayName },
+        MentionAllSegment => new JsonObject { ["type"] = "mention_all" },
+        _ => new JsonObject { ["type"] = segment.GetType().Name }
     };
 
     private QQSendRequest WithReply(QQSendRequest request, string replyToMessageId, int? explicitSequence = null)
