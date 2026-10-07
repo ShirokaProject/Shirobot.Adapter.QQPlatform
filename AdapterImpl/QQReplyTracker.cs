@@ -57,7 +57,31 @@ internal sealed class QQReplyTracker
     public MessageEvent? Find(Channel channel, string messageId)
     {
         lock (_gate)
-            return _byId.TryGetValue(new MessageKey(channel.Type, channel.Id, messageId), out var entry) ? entry.Event : null;
+        {
+            if (_byId.TryGetValue(new MessageKey(channel.Type, channel.Id, messageId), out var entry)) return entry.Event;
+            // QQ can describe a quoted message that was never delivered to the bot. Expose the
+            // structured snapshot through the SDK as well as the log preview; do not parse previews.
+            foreach (var key in _order.Reverse())
+            {
+                if (key.Type != channel.Type || key.ChannelId != channel.Id
+                    || !_byId.TryGetValue(key, out var source)) continue;
+                for (var i = 0; i < source.Chain.Count; i++)
+                {
+                    var quoted = source.Chain[i];
+                    if (quoted.MessageId != messageId) continue;
+                    IReadOnlyList<MessageSegment> segments = quoted.Segments;
+                    if (i + 1 < source.Chain.Count)
+                        segments = segments.Prepend(new QuoteSegment(source.Chain[i + 1].MessageId)).ToArray();
+                    return new MessageEvent
+                    {
+                        MessageId = quoted.MessageId, Channel = source.Event.Channel,
+                        Sender = quoted.Sender, Timestamp = quoted.Timestamp, Segments = segments,
+                        Platform = source.Event.Platform, InstanceId = source.Event.InstanceId
+                    };
+                }
+            }
+            return null;
+        }
     }
 
     public QQQuotedMessage[]? ChainOf(Channel channel, string messageId)

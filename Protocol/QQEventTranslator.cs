@@ -24,19 +24,29 @@ internal static class QQEventTranslator
                 return new PlatformEvent
                 {
                     Platform = Platform, SelfId = selfId, Channel = Channel.Group(groupId),
-                    Kind = QEventKinds.OfficialGroupJoinRequest,
+                    Kind = QEventKinds.GroupJoinRequest,
                     Raw = QQOfficialGroupMapper.JoinRequest(raw, groupId, payload.Id, selfId)
                 };
             }
-            var member = new QOfficialGroupMemberEvent
-            {
-                GroupOpenId = groupId, MemberOpenId = memberId,
-                UserOpenId = QQOfficialGroupMapper.Text(raw, "user_openid"), EventId = payload.Id,
-                Time = QQOfficialGroupMapper.Time(raw), SelfId = long.TryParse(selfId, out var numeric) ? numeric : 0
-            };
             return type == "GROUP_MEMBER_ADD"
-                ? new MemberJoinedEvent { Platform = Platform, SelfId = selfId, Channel = Channel.Group(groupId), UserId = memberId, Raw = member }
-                : new MemberLeftEvent { Platform = Platform, SelfId = selfId, Channel = Channel.Group(groupId), UserId = memberId, Raw = member };
+                ? new MemberJoinedEvent
+                {
+                    Platform = Platform, SelfId = selfId, Channel = Channel.Group(groupId), UserId = memberId,
+                    Raw = new QGroupMemberIncrease
+                    {
+                        GroupId = groupId, UserId = memberId, GlobalUserId = QQOfficialGroupMapper.Text(raw, "user_openid"),
+                        EventId = payload.Id, Time = QQOfficialGroupMapper.Time(raw), SelfId = selfId
+                    }
+                }
+                : new MemberLeftEvent
+                {
+                    Platform = Platform, SelfId = selfId, Channel = Channel.Group(groupId), UserId = memberId,
+                    Raw = new QGroupMemberDecrease
+                    {
+                        GroupId = groupId, UserId = memberId, GlobalUserId = QQOfficialGroupMapper.Text(raw, "user_openid"),
+                        EventId = payload.Id, Time = QQOfficialGroupMapper.Time(raw), SelfId = selfId
+                    }
+                };
         }
         if (type == "INTERACTION_CREATE")
         {
@@ -54,15 +64,18 @@ internal static class QQEventTranslator
                 isGroup ? QOfficialMessageScene.Group
                 : isChannel ? QOfficialMessageScene.Channel : QOfficialMessageScene.Direct,
                 channelId);
-            return new PlatformEvent
+            return new InteractionEvent
             {
                 Platform = Platform, SelfId = selfId, Kind = QEventKinds.OfficialButtonInteraction,
+                InteractionId = interaction.Id, User = new User(userId), ButtonId = interaction.Data.Resolved.ButtonId,
+                Data = interaction.Data.Resolved.ButtonData, MessageId = interaction.Data.Resolved.MessageId,
+                IsAutomaticallyAcknowledged = true,
                 Channel = isGroup ? Channel.Group(channelId)
                     : isChannel ? new Channel(channelId, ChannelType.Other) : Channel.Direct(channelId),
                 Raw = new QOfficialButtonInteraction
                 {
                     Time = DateTimeOffset.UtcNow,
-                    SelfId = long.TryParse(selfId, out var numericSelfId) ? numericSelfId : 0,
+                    SelfId = selfId,
                     InteractionId = interaction.Id,
                     EventId = payload.Id,
                     ButtonData = interaction.Data.Resolved.ButtonData,
@@ -181,7 +194,7 @@ internal static class QQEventTranslator
         var lifecycleRaw = new QOfficialLifecycleEvent
         {
             Time = eventTime ?? DateTimeOffset.UtcNow,
-            SelfId = long.TryParse(selfId, out var numericSelfId) ? numericSelfId : 0,
+            SelfId = selfId,
             EventId = payload.Id,
             Target = new QOfficialMessageTarget(
                 lifecycle.Group ? QOfficialMessageScene.Group : QOfficialMessageScene.Direct, channelId),

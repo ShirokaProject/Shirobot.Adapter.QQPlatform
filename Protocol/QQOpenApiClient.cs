@@ -12,10 +12,10 @@ internal sealed class QQOpenApiClient
     private readonly QQApiTransport _transport;
     private readonly QQChunkedUploadClient _chunked;
     private readonly QQUploadCache _uploads = new();
-    private readonly Dictionary<string, long> _acknowledged = [];
-    private readonly Queue<(string Id, long Serial)> _acknowledgementOrder = new();
     private readonly ConcurrentDictionary<string, string> _sentReferenceIndices = new(StringComparer.Ordinal);
-    private long _acknowledgementSerial;
+    private readonly Dictionary<string, Task> _acknowledged = [];
+    private readonly Queue<(string Id, Task Task)> _acknowledgementOrder = [];
+
 
     public QQOpenApiClient(HttpClient http, QQPlatformConfig config, QQTokenProvider tokens,
         HttpClient? uploadHttp = null)
@@ -183,36 +183,55 @@ internal sealed class QQOpenApiClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(interactionId);
         if (!Enum.IsDefined(code)) throw new ArgumentOutOfRangeException(nameof(code));
-        long serial;
+        cancellationToken.ThrowIfCancellationRequested();
+        Task task;
+        TaskCompletionSource? completion = null;
         lock (_acknowledged)
         {
-            if (_acknowledged.ContainsKey(interactionId)) return;
-            serial = ++_acknowledgementSerial;
-            _acknowledged.Add(interactionId, serial);
-            _acknowledgementOrder.Enqueue((interactionId, serial));
-            while (_acknowledgementOrder.Count > 4096)
+            if (!_acknowledged.TryGetValue(interactionId, out task!))
             {
-                var old = _acknowledgementOrder.Dequeue();
-                if (_acknowledged.TryGetValue(old.Id, out var current) && current == old.Serial)
-                    _acknowledged.Remove(old.Id);
+                completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                task = completion.Task;
+                _acknowledged.Add(interactionId, task);
             }
         }
+        if (completion is not null) _ = CompleteInteractionAcknowledgementAsync(interactionId, code, completion, cancellationToken);
+        await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task CompleteInteractionAcknowledgementAsync(string interactionId, QOfficialInteractionResponseCode code,
+        TaskCompletionSource completion, CancellationToken cancellationToken)
+    {
         try
         {
             using var response = await _transport.SendAsync(HttpMethod.Put, QQApiRoutes.Interaction(interactionId),
                 new System.Text.Json.Nodes.JsonObject { ["code"] = (int)code }, cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
             lock (_acknowledged)
             {
-                if (_acknowledged.TryGetValue(interactionId, out var current) && current == serial)
-                    _acknowledged.Remove(interactionId);
+                _acknowledgementOrder.Enqueue((interactionId, completion.Task));
+                while (_acknowledgementOrder.Count > 4096)
+                {
+                    var old = _acknowledgementOrder.Dequeue();
+                    if (_acknowledged.TryGetValue(old.Id, out var current) && ReferenceEquals(current, old.Task)) _acknowledged.Remove(old.Id);
+                }
             }
-            throw;
+            completion.TrySetResult();
+        }
+        catch (Exception error)
+        {
+            // A failed exchange may already have reached QQ. Share that outcome instead of blindly resending.
+            lock (_acknowledged)
+            {
+                _acknowledgementOrder.Enqueue((interactionId, completion.Task));
+                while (_acknowledgementOrder.Count > 4096)
+                {
+                    var old = _acknowledgementOrder.Dequeue();
+                    if (_acknowledged.TryGetValue(old.Id, out var current) && ReferenceEquals(current, old.Task)) _acknowledged.Remove(old.Id);
+                }
+            }
+            completion.TrySetException(error);
         }
     }
-
 
     internal async Task<JsonElement> SendGroupRequestAsync(HttpMethod method, string route,
         System.Text.Json.Nodes.JsonObject? body, CancellationToken cancellationToken)

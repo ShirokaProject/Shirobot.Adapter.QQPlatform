@@ -27,8 +27,8 @@ public sealed class OfficialGroupTests
             Assert.Null(entry.OperatorId);
         }
         else Assert.Equal("member-a", Assert.IsType<MemberLeftEvent>(result).UserId);
-        var raw = Assert.IsType<QOfficialGroupMemberEvent>(result!.Raw);
-        Assert.Equal("user-a", raw.UserOpenId);
+        var raw = Assert.IsAssignableFrom<QEventPayload>(result!.Raw);
+        Assert.Equal("user-a", joined ? ((QGroupMemberIncrease)raw).GlobalUserId : ((QGroupMemberDecrease)raw).GlobalUserId);
         Assert.Equal("evt", raw.EventId);
         Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1784276757), raw.Time);
     }
@@ -39,14 +39,17 @@ public sealed class OfficialGroupTests
     public void JoinRequestKeepsVerificationAndAutomaticApproval()
     {
         using var json = JsonDocument.Parse(JoinJson);
-        var result = Assert.IsType<PlatformEvent>(QQEventTranslator.Translate(new GatewayPayload(0, json.RootElement, 1, "GROUP_JOIN_REQUEST", "evt"), "123"));
-        Assert.Equal(QEventKinds.OfficialGroupJoinRequest, result.Kind);
+        var result = Assert.IsType<PlatformEvent>(QQEventTranslator.Translate(new GatewayPayload(0, json.RootElement, 1, "GROUP_JOIN_REQUEST", "evt"), "bot-openid"));
+        Assert.Equal(QEventKinds.GroupJoinRequest, result.Kind);
         Assert.Equal(Channel.Group("group-a"), result.Channel);
-        var request = Assert.IsType<QOfficialJoinRequest>(result.Raw);
-        Assert.Equal("request-1", request.JoinRequestId);
+        var request = Assert.IsType<QGroupJoinRequest>(result.Raw);
+        Assert.Equal("request-1", request.RequestId);
+        Assert.Equal("bot-openid", request.SelfId);
+        Assert.Equal("member-a", request.UserId);
+        Assert.True(request.IsInvited);
         Assert.Equal("evt", request.EventId);
         Assert.Equal("strategy-a", request.AutoApprovedStrategyId);
-        Assert.Equal("inviter", request.InvitedBy);
+        Assert.Equal("inviter", request.InviterId);
         Assert.Equal("hello", Assert.Single(request.Verification!.Answers).Answer);
     }
 
@@ -120,15 +123,15 @@ public sealed class OfficialGroupTests
         using var fixture = new Fixture { Response = "{\"list\":[" + JoinJson + "],\"next_cursor\":\"next\"}" };
         var page = await fixture.Groups.GetJoinRequestsAsync("group/a", "a+b", 50);
         Assert.Equal("next", page.NextCursor);
-        Assert.Equal("group/a", Assert.Single(page.Requests).GroupOpenId);
+        Assert.Equal("group/a", Assert.Single(page.Requests).GroupId);
         Assert.EndsWith("/group%2Fa/join_request_list?limit=50&cursor=a%2Bb", fixture.Requests[^1].Uri);
         fixture.Response = "{}";
-        await fixture.Groups.ApproveJoinRequestAsync("group/a", "member/a", "request-1");
+        await fixture.Groups.AcceptJoinRequestAsync(new QGroupJoinRequest { GroupId = "group/a", UserId = "member/a", RequestId = "request-1" });
         Assert.Equal("POST", fixture.Requests[^1].Method);
         Assert.EndsWith("/approval_join_request/member%2Fa", fixture.Requests[^1].Uri);
         Assert.Equal("approve", fixture.LastBody.GetProperty("op").GetString());
         Assert.False(fixture.LastBody.TryGetProperty("add_to_member_blacklist", out _));
-        await fixture.Groups.RejectJoinRequestAsync("group/a", "member/a", "request-1", "reason", true);
+        await fixture.Groups.RejectJoinRequestAsync(new QGroupJoinRequest { GroupId = "group/a", UserId = "member/a", RequestId = "request-1" }, "reason", true);
         Assert.Equal("decline", fixture.LastBody.GetProperty("op").GetString());
         Assert.True(fixture.LastBody.GetProperty("add_to_member_blacklist").GetBoolean());
         Assert.Equal("reason", fixture.LastBody.GetProperty("reject_reason").GetString());
@@ -144,16 +147,16 @@ public sealed class OfficialGroupTests
         Assert.Equal(new[] { 1, 2 }, Assert.Single(state.RecurringRules).Weekdays);
         Assert.Equal("Alice", Assert.Single(state.Members).Username);
         fixture.Response = "{}";
-        await fixture.Groups.SetMemberMutesAsync("group-a", [new("m1", TimeSpan.Zero), new("m2", TimeSpan.FromMinutes(2)), new("m3", TimeSpan.FromMinutes(3), true)]);
-        var entries = fixture.LastBody.GetProperty("members");
-        Assert.Equal("del", entries[0].GetProperty("op").GetString());
-        Assert.Equal("", entries[0].GetProperty("mute_expire_at").GetString());
-        Assert.Equal("add", entries[1].GetProperty("op").GetString());
-        Assert.Equal("update", entries[2].GetProperty("op").GetString());
-        Assert.True(DateTimeOffset.TryParse(entries[2].GetProperty("mute_expire_at").GetString(), out _));
+        var result = await fixture.Groups.SetMemberMutesAsync("group-a", [new() { UserId = "m1", Duration = TimeSpan.Zero }, new() { UserId = "m2", Duration = TimeSpan.FromMinutes(2) }, new() { UserId = "m3", Duration = TimeSpan.FromMinutes(3) }]);
+        Assert.True(result.IsSuccess);
+        var batches = fixture.Requests.Where(x => x.Method == "POST").Select(x => JsonDocument.Parse(x.Body).RootElement.Clone().GetProperty("members")[0]).ToArray();
+        Assert.Equal("del", batches[0].GetProperty("op").GetString());
+        Assert.Equal("add", batches[1].GetProperty("op").GetString());
+        Assert.Equal("add", batches[2].GetProperty("op").GetString());
+        Assert.True(DateTimeOffset.TryParse(batches[2].GetProperty("mute_expire_at").GetString(), out _));
         var count = fixture.Requests.Count;
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => fixture.Groups.SetMemberMutesAsync("g", [new("m", TimeSpan.FromDays(31))]));
-        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Groups.SetMemberMutesAsync("g", [new("m", TimeSpan.Zero), new("m", TimeSpan.Zero)]));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => fixture.Groups.SetMemberMutesAsync("g", [new() { UserId = "m", Duration = TimeSpan.FromDays(31) }]));
+        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Groups.SetMemberMutesAsync("g", [new() { UserId = "m", Duration = TimeSpan.Zero }, new() { UserId = "m", Duration = TimeSpan.Zero }]));
         Assert.Equal(count, fixture.Requests.Count);
     }
 
@@ -161,28 +164,28 @@ public sealed class OfficialGroupTests
     public async Task StrategyLifecycleAndWhitelistFollowOfficialContract()
     {
         using var fixture = new Fixture { Response = """{"strategy_id":"s1","is_enable":"on","expire_at":"2027-01-01T00:00:00+08:00"}""" };
-        var created = await fixture.Groups.CreateApprovalStrategyAsync(new() { GroupIds = [ulong.MaxValue], Remark = "test" });
+        var created = await fixture.Strategies.CreateApprovalStrategyAsync(new() { GroupNumbers = [ulong.MaxValue.ToString()], Remark = "test" });
         Assert.Equal("s1", created.StrategyId);
         Assert.True(created.Enabled);
         Assert.Equal(ulong.MaxValue, fixture.LastBody.GetProperty("group_ids")[0].GetUInt64());
-        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Groups.CreateApprovalStrategyAsync(new() { GroupIds = [1], GroupOpenIds = ["g"] }));
+        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Strategies.CreateApprovalStrategyAsync(new() { GroupNumbers = ["1"], GroupIds = ["g"] }));
         fixture.Response = """{"strategies":[{"strategy_id":"s1","is_enable":"on","group_ids":["10****499"],"whitelist_user_count":2}],"next_cursor":"c2"}""";
-        var page = await fixture.Groups.GetApprovalStrategiesAsync("c1", 50);
-        Assert.Equal("10****499", Assert.Single(page.Strategies).GroupIds[0]);
+        var page = await fixture.Strategies.GetApprovalStrategiesAsync("c1", 50);
+        Assert.Equal("10****499", Assert.Single(page.Strategies).GroupNumbers[0]);
         Assert.Equal("c2", page.NextCursor);
         fixture.Response = """{"is_enable":"off"}""";
-        var updated = await fixture.Groups.UpdateApprovalStrategyAsync("s/1", new() { Enabled = false, Groups = new() { Add = false, GroupOpenIds = ["g"] } });
+        var updated = await fixture.Strategies.UpdateApprovalStrategyAsync("s/1", new() { Enabled = false, Groups = new() { Add = false, GroupIds = ["g"] } });
         Assert.Equal("s/1", updated.StrategyId);
         Assert.False(updated.Enabled);
         Assert.Equal("PATCH", fixture.Requests[^1].Method);
         Assert.Equal("del", fixture.LastBody.GetProperty("group_action").GetProperty("op").GetString());
         fixture.Response = """{"strategy_id":"s1","whitelist_user_count":3}""";
-        Assert.Equal(3, await fixture.Groups.UpdateApprovalWhitelistAsync("s1", ["1234567"], false));
+        Assert.Equal(3, await fixture.Strategies.UpdateApprovalWhitelistAsync("s1", ["1234567"], false));
         Assert.Equal("del", fixture.LastBody.GetProperty("op").GetString());
         fixture.Response = "{}";
-        await fixture.Groups.ExecuteApprovalStrategyAsync("s1");
+        await fixture.Strategies.ExecuteApprovalStrategyAsync("s1");
         Assert.EndsWith("/s1/execute", fixture.Requests[^1].Uri);
-        await fixture.Groups.DeleteApprovalStrategyAsync("s1");
+        await fixture.Strategies.DeleteApprovalStrategyAsync("s1");
         Assert.Equal("DELETE", fixture.Requests[^1].Method);
     }
 
@@ -226,11 +229,100 @@ public sealed class OfficialGroupTests
         Assert.Single(fixture.Requests, x => x.Uri.EndsWith("/messages"));
     }
 
+    [Fact]
+    public async Task CommonGroupApiMapsGroupAndMemberQueries()
+    {
+        using var fixture = new Fixture { Response = """{"group_openid":"group/a","group_name":"test","member_count":2}""" };
+        Assert.True(fixture.Groups.Capabilities.HasFlag(QGroupCapabilities.GroupInfo));
+        Assert.False(fixture.Groups.Capabilities.HasFlag(QGroupCapabilities.GroupList));
+        var group = await fixture.Groups.GetGroupInfoAsync("group/a");
+        Assert.Equal("group/a", group.GroupId);
+        Assert.Equal("test", group.GroupName);
+        fixture.Response = """{"member_openid":"member-a","username":"Alice","member_role":"admin"}""";
+        var member = await fixture.Groups.GetGroupMemberInfoAsync("group/a", "member-a");
+        Assert.Equal("member-a", member.UserId);
+        Assert.Equal(QGroupRole.Admin, member.Role);
+        fixture.Response = """{"members":[{"member_openid":"member-a","username":"Alice"}],"next_cursor":"next"}""";
+        fixture.OnRequest = (request, _) =>
+        {
+            if (request.RequestUri!.Query.Contains("next"))
+                fixture.Response = """{"members":[{"member_openid":"member-b","username":"Bob"}]}""";
+            return Task.CompletedTask;
+        };
+        var members = await fixture.Groups.GetGroupMemberListAsync("group/a");
+        Assert.Equal(new[] { "member-a", "member-b" }, members.Select(x => x.UserId));
+    }
+
+    [Fact]
+    public async Task RepeatedMemberCursorFailsInsteadOfLooping()
+    {
+        using var fixture = new Fixture { Response = """{"members":[],"next_cursor":"repeat"}""" };
+        await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Groups.GetGroupMemberListAsync("g"));
+        Assert.Equal(2, fixture.Requests.Count);
+    }
+
+    [Fact]
+    public async Task UnknownProfileFieldsAreNotInvented()
+    {
+        using var fixture = new Fixture { Response = """{"group_openid":"g"}""" };
+        var group = await fixture.Groups.GetGroupInfoAsync("g");
+        Assert.Null(group.GroupName);
+        Assert.Null(group.MemberCount);
+        Assert.Null(group.MaxMemberCount);
+        fixture.Response = """{"member_openid":"u"}""";
+        var member = await fixture.Groups.GetGroupMemberInfoAsync("g", "u");
+        Assert.Null(member.Nickname);
+        Assert.Equal(QGroupRole.Unknown, member.Role);
+        Assert.Equal("u", member.DisplayName);
+    }
+
+    [Fact]
+    public async Task PatchDistinguishesUnsetSetAndClear()
+    {
+        using var fixture = new Fixture();
+        await fixture.Strategies.UpdateApprovalStrategyAsync("s", new() { Enabled = false });
+        Assert.False(fixture.LastBody.TryGetProperty("remark", out _));
+        await fixture.Strategies.UpdateApprovalStrategyAsync("s", new() { Remark = QPatch<string>.Clear() });
+        Assert.Equal("", fixture.LastBody.GetProperty("remark").GetString());
+        var expiry = DateTimeOffset.UtcNow.AddDays(1);
+        await fixture.Strategies.UpdateApprovalStrategyAsync("s", new() { ExpiresAt = QPatch<DateTimeOffset>.Set(expiry) });
+        Assert.Equal(expiry, DateTimeOffset.Parse(fixture.LastBody.GetProperty("expire_at").GetString()!));
+        var count = fixture.Requests.Count;
+        await Assert.ThrowsAsync<NotSupportedException>(() => fixture.Strategies.UpdateApprovalStrategyAsync("s", new() { ExpiresAt = QPatch<DateTimeOffset>.Clear() }));
+        Assert.Equal(count, fixture.Requests.Count);
+    }
+
+    [Fact]
+    public async Task BatchRetainsSuccessAndUnknownOutcomesAndContinues()
+    {
+        using var fixture = new Fixture();
+        fixture.OnRequest = (_, _) => fixture.Requests.Count == 2 ? throw new HttpRequestException("Disconnected") : Task.CompletedTask;
+        var result = await fixture.Groups.SetMemberMutesAsync("g", [
+            new() { UserId = "a", Duration = TimeSpan.Zero },
+            new() { UserId = "b", Duration = TimeSpan.Zero },
+            new() { UserId = "c", Duration = TimeSpan.Zero }]);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(new[] { QOperationStatus.Succeeded, QOperationStatus.Unknown, QOperationStatus.Succeeded }, result.Items.Select(x => x.Status));
+    }
+
+    [Fact]
+    public async Task BatchCancellationIncludesPartialResults()
+    {
+        using var fixture = new Fixture();
+        using var cancel = new CancellationTokenSource();
+        fixture.OnRequest = (_, _) => { cancel.Cancel(); return Task.CompletedTask; };
+        var error = await Assert.ThrowsAsync<QBatchOperationCanceledException>(() => fixture.Groups.SetMemberMutesAsync("g", [
+            new() { UserId = "a", Duration = TimeSpan.Zero }, new() { UserId = "b", Duration = TimeSpan.Zero }], cancel.Token));
+        Assert.Equal(QOperationStatus.NotExecuted, error.PartialResult.Items[1].Status);
+        Assert.Single(fixture.Requests);
+    }
+
     private sealed class Fixture : HttpMessageHandler
     {
         private readonly HttpClient _http;
         internal QQOpenApiClient Api { get; }
-        internal IQOfficialGroupApi Groups { get; }
+        internal IQGroupApi Groups { get; }
+        internal IQGroupApprovalStrategyApi Strategies { get; }
         internal string Response { get; set; } = """{"id":"sent","file_info":"file"}""";
         internal Func<HttpRequestMessage, CancellationToken, Task>? OnRequest { get; set; }
         internal List<(string Method, string Uri, string Body)> Requests { get; } = [];
@@ -240,7 +332,8 @@ public sealed class OfficialGroupTests
             _http = new HttpClient(this, disposeHandler: false);
             var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
             Api = new QQOpenApiClient(_http, config, new QQTokenProvider(_http, config));
-            Groups = new QQOfficialGroupService(Api);
+            var groups = new QQOfficialGroupService(Api);
+            Groups = groups; Strategies = groups;
         }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {

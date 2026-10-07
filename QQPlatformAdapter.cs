@@ -172,11 +172,20 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
         try
         {
             var translated = QQEventTranslator.Translate(payload, _selfId, _users.Self?.Name);
-            if (translated is PlatformEvent
-                { Kind: QEventKinds.OfficialButtonInteraction, Raw: QOfficialButtonInteraction interaction } platformEvent)
+            if (translated is InteractionEvent platformEvent)
             {
-                try { await _api!.AcknowledgeInteractionAsync(interaction.InteractionId).ConfigureAwait(false); }
-                catch (Exception ex) { Logger.Warning($"QQ interaction acknowledgement failed: {ex.Message}"); }
+                try
+                {
+                    await _api!.AcknowledgeInteractionAsync(platformEvent.InteractionId).ConfigureAwait(false);
+                    platformEvent = platformEvent with { Acknowledgement = InteractionAcknowledgement.Acknowledged };
+                }
+                catch (Exception ex)
+                {
+                    platformEvent = platformEvent with { Acknowledgement = ex is QQApiException ? InteractionAcknowledgement.Failed : InteractionAcknowledgement.Unknown };
+                    Logger.Warning($"QQ interaction acknowledgement failed: {ex.Message}");
+                }
+                _messages?.RememberInteraction(platformEvent);
+                translated = platformEvent;
                 if (platformEvent.Channel?.Type == ChannelType.Group)
                 {
                     var groupName = await GetGroupNameAsync(platformEvent.Channel.Id).ConfigureAwait(false);
@@ -285,5 +294,5 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
 internal sealed class QQUserService : IUserService
 {
     public User? Self { get; set; }
-    public Task<User> GetSelfAsync() => Task.FromResult(Self ?? throw new InvalidOperationException("QQ bot identity is not ready."));
+    public Task<User> GetSelfAsync(CancellationToken cancellationToken = default) => cancellationToken.IsCancellationRequested ? Task.FromCanceled<User>(cancellationToken) : Task.FromResult(Self ?? throw new InvalidOperationException("QQ bot identity is not ready."));
 }

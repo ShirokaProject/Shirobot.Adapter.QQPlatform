@@ -8,6 +8,7 @@ internal static class QQIdentityMapper
     {
         "owner" => MemberRole.Owner,
         "admin" => MemberRole.Admin,
-        _ => MemberRole.Member
+        "member" => MemberRole.Member,
+        _ => MemberRole.Unknown
     };
 }

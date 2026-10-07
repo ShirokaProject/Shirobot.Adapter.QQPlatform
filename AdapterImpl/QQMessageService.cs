@@ -65,9 +65,82 @@ internal sealed class QQMessageService(
         return enriched;
     }
 
-    public async Task<SentMessage> SendMessageAsync(Channel channel, IReadOnlyList<MessageSegment> segments)
+    private readonly Dictionary<string, QOfficialMessageReply> _interactionReplies = new(StringComparer.Ordinal);
+    private readonly Queue<string> _interactionReplyOrder = new();
+    internal void RememberInteraction(InteractionEvent interaction)
+    {
+        if (interaction.Raw is not QOfficialButtonInteraction raw) return;
+        lock (_interactionReplies)
+        {
+            if (!_interactionReplies.ContainsKey(interaction.InteractionId)) _interactionReplyOrder.Enqueue(interaction.InteractionId);
+            _interactionReplies[interaction.InteractionId] = new() { EventId = raw.EventId ?? raw.InteractionId };
+            while (_interactionReplyOrder.Count > 4096) _interactionReplies.Remove(_interactionReplyOrder.Dequeue());
+        }
+    }
+    private QOfficialMessageReply ResolveInteractionReply(InteractionReference reference)
+    {
+        lock (_interactionReplies)
+            return _interactionReplies.TryGetValue(reference.InteractionId, out var reply) ? reply
+                : throw new InvalidOperationException("Interaction reply context is no longer available.");
+    }
+
+    public MessageCapabilities GetMessageCapabilities(Channel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (channel.Type is not (ChannelType.Group or ChannelType.Direct)) return new();
+        return new()
+        {
+            NativeFeatures = MessageFeatures.Text | MessageFeatures.Markdown | MessageFeatures.Image | MessageFeatures.Audio
+                | MessageFeatures.Video | MessageFeatures.File | MessageFeatures.Quote | MessageFeatures.LinkButtons | MessageFeatures.CallbackButtons | MessageFeatures.InteractionReply
+                | (channel.Type == ChannelType.Group ? MessageFeatures.Mention : MessageFeatures.None),
+            ButtonsRequireMarkdown = true, MaxButtonRows = 5, MaxButtonsPerRow = 5,
+            MaxMediaSegments = 1, MaxTextLength = QQTextChunker.MaxLength
+        };
+    }
+    public MessageSendAssessment AssessMessage(Channel channel, OutgoingMessage message) =>
+        MessagePreparation.Assess(message, GetMessageCapabilities(channel));
+
+    public async Task<SentMessage> SendMessageAsync(Channel channel, OutgoingMessage message, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var prepared = MessagePreparation.Prepare(message, GetMessageCapabilities(channel));
+        SentMessage result;
+        if (prepared.Message.Segments.OfType<MarkdownSegment>().SingleOrDefault() is { } markdown)
+        {
+            var keyboard = prepared.Message.Buttons is { } layout ? new QInlineKeyboard(layout.Rows.Select(row => new QKeyboardRow(
+                row.Buttons.Select(button => new QKeyboardButton
+                {
+                    Id = button.Id,
+                    RenderData = new(button.Label, button.Label, QKeyboardButtonStyle.Blue),
+                    Action = new()
+                    {
+                        Type = button.Action is OpenUrlAction ? QKeyboardActionType.Jump : QKeyboardActionType.Callback,
+                        Data = button.Action is OpenUrlAction link ? link.Url : ((CallbackAction)button.Action).Data,
+                        Permission = new() { Type = QKeyboardPermissionType.Everyone },
+                        UnsupportTips = "请升级 QQ 客户端"
+                    }
+                }).ToArray())).ToArray()) : null;
+            var quote = prepared.Message.Segments.OfType<QuoteSegment>().SingleOrDefault();
+            result = await SendOfficialAsync(channel, new QQSendRequest
+            {
+                MessageType = 2, Markdown = QQOfficialMessageMapper.MapMarkdown(new QCustomMarkdown(markdown.Content)),
+                Keyboard = QQOfficialMessageMapper.MapKeyboard(keyboard)
+            }, prepared.Message.ReplyToInteraction is { } interaction ? ResolveInteractionReply(interaction) : quote is null ? null : new QOfficialMessageReply { MessageId = quote.MessageId }, "[Markdown]", cancellationToken).ConfigureAwait(false);
+        }
+        else if (prepared.Message.ReplyToInteraction is { } interaction)
+            result = await SendOfficialAsync(channel, new QQSendRequest { MessageType = 0,
+                Content = string.Concat(prepared.Message.Segments.OfType<TextSegment>().Select(x => x.Text)) },
+                ResolveInteractionReply(interaction), "[Interaction reply]", cancellationToken).ConfigureAwait(false);
+        else result = await SendMessageAsync(channel, prepared.Message.Segments, cancellationToken).ConfigureAwait(false);
+        return result with { Transformations = prepared.Transformations };
+    }
+
+    public async Task<SentMessage> SendMessageAsync(Channel channel, IReadOnlyList<MessageSegment> segments, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(segments);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (segments.Any(x => x is MarkdownSegment or CardSegment))
+            return await SendMessageAsync(channel, new OutgoingMessage { Segments = segments }, cancellationToken).ConfigureAwait(false);
         var quotes = segments.OfType<QuoteSegment>().ToArray();
         if (quotes.Length > 1 || quotes.Length == 1 && string.IsNullOrWhiteSpace(quotes[0].MessageId))
             throw new ArgumentException("QQ Official replies accept at most one valid QuoteSegment.", nameof(segments));
@@ -134,18 +207,18 @@ internal sealed class QQMessageService(
             if (channel.Type == ChannelType.Group && replyToMessageId is null && content.Length == 0)
             {
                 var sent = path is not null
-                    ? await api.SendLocalAsync(channel, fileType, path, fileName).ConfigureAwait(false)
+                    ? await api.SendLocalAsync(channel, fileType, path, fileName, cancellationToken).ConfigureAwait(false)
                     : await api.SendRemoteAsync(channel, fileType, url!,
-                        resource is FileSegment ? fileName : null).ConfigureAwait(false);
+                        resource is FileSegment ? fileName : null, cancellationToken).ConfigureAwait(false);
                 RememberSentMessage(channel, sent, replyToMessageId, segments);
                 var target = string.IsNullOrWhiteSpace(channel.Name) ? channel.Id : channel.Name;
                 logger?.Info($"已发送群消息到 {target}: [{resource.GetType().Name}]");
                 return sent;
             }
             var fileInfo = path is not null
-                ? await api.UploadLocalAsync(channel, fileType, path, fileName).ConfigureAwait(false)
+                ? await api.UploadLocalAsync(channel, fileType, path, fileName, cancellationToken).ConfigureAwait(false)
                 : await api.UploadRemoteAsync(channel, fileType, url!,
-                    resource is FileSegment ? fileName : null).ConfigureAwait(false);
+                    resource is FileSegment ? fileName : null, cancellationToken).ConfigureAwait(false);
             request = new QQSendRequest
             {
                 MessageType = 7,
@@ -167,40 +240,40 @@ internal sealed class QQMessageService(
                     lastSent = await SendOneAsync(channel, new QQSendRequest
                     {
                         MessageType = 0, Content = chunks[i], MessageReference = i == 0 ? referenced : null
-                    }, replyToMessageId, chunks.Count == 1 ? displayContent.ToString() : chunks[i], segments).ConfigureAwait(false);
+                    }, replyToMessageId, chunks.Count == 1 ? displayContent.ToString() : chunks[i], segments, cancellationToken).ConfigureAwait(false);
                 return lastSent;
             }
         }
         if (QuoteReferenceIndex() is { } referenceIndex)
             request = request with { MessageReference = new QQMessageReference(referenceIndex) };
         return await SendOneAsync(channel, request, replyToMessageId,
-            resource is null ? displayContent.ToString() : $"[{resource.GetType().Name}]", segments).ConfigureAwait(false);
+            resource is null ? displayContent.ToString() : $"[{resource.GetType().Name}]", segments, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Sends passively while the source message still allows it, otherwise (or when QQ says it no longer does) proactively.</summary>
     private async Task<SentMessage> SendOneAsync(Channel channel, QQSendRequest request, string? replyToMessageId,
-        string description, IReadOnlyList<MessageSegment> segments)
+        string description, IReadOnlyList<MessageSegment> segments, CancellationToken cancellationToken)
     {
         if (replyToMessageId is not null && !CanReplyPassively(channel, replyToMessageId)) replyToMessageId = null;
-        if (replyToMessageId is null) return await SendAndLogAsync(channel, request, description, segments).ConfigureAwait(false);
+        if (replyToMessageId is null) return await SendAndLogAsync(channel, request, description, segments, cancellationToken).ConfigureAwait(false);
         try
         {
-            return await SendAndLogAsync(channel, WithReply(request, replyToMessageId), description, segments).ConfigureAwait(false);
+            return await SendAndLogAsync(channel, WithReply(request, replyToMessageId), description, segments, cancellationToken).ConfigureAwait(false);
         }
         catch (QQApiException ex) when (ex.IsPassiveReplyExpired)
         {
             logger?.Warning($"QQ Official passive reply was refused (err_code {ex.ErrorCode}); sending as a proactive message.");
-            return await SendAndLogAsync(channel, request, description, segments).ConfigureAwait(false);
+            return await SendAndLogAsync(channel, request, description, segments, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    public Task DeleteMessageAsync(Channel channel, string messageId) => api.DeleteMessageAsync(channel, messageId);
+    public Task DeleteMessageAsync(Channel channel, string messageId, CancellationToken cancellationToken = default) => api.DeleteMessageAsync(channel, messageId, cancellationToken);
 
-    /// <summary>QQ has no endpoint to fetch a message, so only recently seen or sent messages can be returned.</summary>
-    public Task<MessageEvent?> GetMessageAsync(Channel channel, string messageId) =>
-        Task.FromResult(_replies.Find(channel, messageId));
+    /// <summary>Returns cached messages or structured quote snapshots supplied by QQ; no history endpoint is available.</summary>
+    public Task<MessageEvent?> GetMessageAsync(Channel channel, string messageId, CancellationToken cancellationToken = default) =>
+        cancellationToken.IsCancellationRequested ? Task.FromCanceled<MessageEvent?>(cancellationToken) : Task.FromResult(_replies.Find(channel, messageId));
 
-    public async Task SendTypingAsync(Channel channel, string replyToMessageId, TimeSpan duration)
+    public async Task SendTypingAsync(Channel channel, string replyToMessageId, TimeSpan duration, CancellationToken cancellationToken = default)
     {
         if (channel.Type != ChannelType.Direct)
             throw new NotSupportedException("QQ Official typing status supports C2C only.");
@@ -211,7 +284,7 @@ internal sealed class QQMessageService(
         {
             MessageType = 6, InputNotify = new QQInputNotify(1, seconds)
         }, replyToMessageId);
-        await api.SendTypingAsync(channel, request).ConfigureAwait(false);
+        await api.SendTypingAsync(channel, request, cancellationToken).ConfigureAwait(false);
         logger?.Info($"已发送私聊输入状态到 {channel.Id}: {seconds} 秒");
     }
 

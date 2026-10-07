@@ -58,20 +58,21 @@ new FileSegment("base64:" + Convert.ToBase64String(bytes)) { FileName = "report.
 ### 群成员事件与官方群管理
 
 `GROUP_MEMBER_ADD` / `GROUP_MEMBER_REMOVE` 映射为 SDK 的 `MemberJoinedEvent` / `MemberLeftEvent`，
-`Raw` 为 `QOfficialGroupMemberEvent`，以 `member_openid` 作为群内用户 ID，另保留 `user_openid`。
-`GROUP_JOIN_REQUEST` 映射为 `PlatformEvent`，Kind 为 `QEventKinds.OfficialGroupJoinRequest`，
-Raw 为 `QOfficialJoinRequest`，保留申请 ID、验证消息/问答、邀请人、风险提示及自动审批策略 ID。
+`Raw` 为 `QGroupMemberIncrease` / `QGroupMemberDecrease`，以 `member_openid` 作为群内用户 ID，另保留 `user_openid`。
+`GROUP_JOIN_REQUEST` 映射为 `PlatformEvent`，Kind 为 `QEventKinds.GroupJoinRequest`，
+Raw 为 `QGroupJoinRequest`，保留申请 ID、验证消息/问答、邀请人、风险提示及自动审批策略 ID。
 在适配器配置中开启 `subscribe_group_member_events = true`，或在 `intents` 中加入 `1 << 24`，
 即可订阅上述事件。开关默认关闭；入群申请事件需要机器人是群管理员。
 
-通过 `context.GetAdapterExtension<IQOfficialGroupApi>()` 获取官方群管理接口，支持：
+通过 `context.GetAdapterExtension<IQGroupApi>()` 获取官方群管理接口，支持：
 
 - 分页查询入群申请、同意或拒绝（可提供拒绝理由及同时拉黑）。
 - 查询群禁言状态、定时/周期禁言规则，以及单次最多 20 人的批量禁言/解除禁言。
-- 自动审批策略的分页查询、创建、修改、删除、触发执行及白名单号码增删。
+- 通过 `IQGroupApprovalStrategyApi` 探测自动审批策略的分页查询、创建、修改、删除、触发执行及白名单号码增删。
 
 群管理需要管理员身份及 QQ 平台开放的接口权限；不满足权限时平台错误会返回调用方。
-批量禁言通过 `UpdateExisting` 选择 add/update，零时长发送 del；只调用一次，不自动重复管理操作。
+批量禁言先校验最多 20 项，再逐项设置状态，返回成功、失败、结果未知或未执行。零时长解除禁言；协议 add/update 由适配器处理。
+取消抛出的 `QBatchOperationCanceledException` 携带部分结果，不回滚已完成的操作。
 策略执行为异步任务，接口成功只代表已触发扫描。
 
 按钮支持 `GroupId`（仅回调按钮）、`QKeyboardModal` 二次确认和 `Red` / `BlueFilled` 样式。
@@ -79,5 +80,5 @@ Markdown 可设置 `ForceVerifyImageResource = true`，图片转存失败时拒�
 通用消息发送支持文字加单个媒体；纯媒体仍不填充空格正文。
 类型化 `IQOfficialMessageApi.SendAsync` 的取消令牌覆盖最终发送请求。
 
-这些新能力新增了共享 QQ Model 类型，测试时需同步更新宿主和适配器；旧插件无需重新编译，
-使用新能力的插件需引用更新后的 `ShiroBot.Model.QQ`。
+SDK 和 QQ Model ABI 已升级为 1.0.0.0，所有 ID 统一使用字符串；群管理与 Milky 共用 `IQGroupApi`。
+旧 `IQOfficialGroupApi` 已删除。引用 QQ Model 的插件和适配器均需重新编译并同步更新宿主。

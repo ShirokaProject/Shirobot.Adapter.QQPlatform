@@ -2,6 +2,7 @@ using ShiroBot.Adapter.QQPlatform.Protocol;
 using ShiroBot.Adapter.QQPlatform.Wire;
 using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Models;
+using ShiroBot.SDK.Adapter;
 using ShiroBot.SDK.Plugin;
 
 namespace ShiroBot.Adapter.QQPlatform.AdapterImpl;
@@ -10,7 +11,7 @@ namespace ShiroBot.Adapter.QQPlatform.AdapterImpl;
 internal sealed class QQOfficialMessageService(
     QQOpenApiClient api, QQMessageService messages, IConsoleLogger? logger = null,
     Func<string, string?>? groupNameResolver = null)
-    : IQOfficialMessageApi, IQOfficialDirectMessageApi, IQOfficialMediaApi
+    : IQOfficialMessageApi, IQOfficialDirectMessageApi, IQOfficialMediaApi, IMessageInteractionService
 {
     private const long MaxUploadSize = 200L * 1024 * 1024;
 
@@ -59,14 +60,14 @@ internal sealed class QQOfficialMessageService(
     }
 
     public async Task<string> SendAsync(QOfficialMessageTarget target, QOfficialMedia media,
-        QOfficialMessageReply? reply = null)
-        => await SendMediaAsync(target, media, null, reply).ConfigureAwait(false);
+        QOfficialMessageReply? reply = null, CancellationToken cancellationToken = default)
+        => await SendMediaAsync(target, media, null, reply, cancellationToken: cancellationToken).ConfigureAwait(false);
 
     public async Task<string> SendWithCaptionAsync(QOfficialMessageTarget target, QOfficialMedia media,
-        string content, QOfficialMessageReply? reply = null)
+        string content, QOfficialMessageReply? reply = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(content);
-        return await SendMediaAsync(target, media, content, reply).ConfigureAwait(false);
+        return await SendMediaAsync(target, media, content, reply, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<string> SendMediaAsync(QOfficialMessageTarget target, QOfficialMedia media,
@@ -165,16 +166,16 @@ internal sealed class QQOfficialMessageService(
     }
 
     public async Task<string> SendTextAsync(QOfficialMessageTarget target, string content,
-        QOfficialMessageReply? reply = null)
+        QOfficialMessageReply? reply = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(content);
         var sent = await SendToTargetAsync(target,
-            new QQSendRequest { MessageType = 0, Content = content }, reply, content).ConfigureAwait(false);
+            new QQSendRequest { MessageType = 0, Content = content }, reply, content, cancellationToken: cancellationToken).ConfigureAwait(false);
         return sent.MessageId;
     }
 
     public async Task<string> SendArkAsync(QOfficialMessageTarget target, int templateId,
-        IReadOnlyDictionary<string, string> fields, QOfficialMessageReply? reply = null)
+        IReadOnlyDictionary<string, string> fields, QOfficialMessageReply? reply = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(fields);
         if (templateId <= 0) throw new ArgumentOutOfRangeException(nameof(templateId));
@@ -187,12 +188,12 @@ internal sealed class QQOfficialMessageService(
             Ark = new QQArk(templateId, fields.Select(field => new QQArkField(field.Key, field.Value)).ToArray())
         };
         var sent = await SendToTargetAsync(target, request, reply,
-            $"[Ark 模板 {templateId}]").ConfigureAwait(false);
+            $"[Ark 模板 {templateId}]", cancellationToken: cancellationToken).ConfigureAwait(false);
         return sent.MessageId;
     }
 
     public async Task<string> SendEmbedAsync(QOfficialMessageTarget target, QOfficialEmbed embed,
-        QOfficialMessageReply? reply = null)
+        QOfficialMessageReply? reply = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(embed);
         if (embed.Title is null && embed.Prompt is null && embed.Thumbnail is null
@@ -216,14 +217,14 @@ internal sealed class QQOfficialMessageService(
                 Fields = embed.Fields?.Select(field => new QQEmbedField(field.Name)).ToArray()
             }
         };
-        var sent = await SendToTargetAsync(target, request, reply, "[Embed]").ConfigureAwait(false);
+        var sent = await SendToTargetAsync(target, request, reply, "[Embed]", cancellationToken: cancellationToken).ConfigureAwait(false);
         return sent.MessageId;
     }
 
-    public Task SendTypingAsync(QOfficialMessageTarget target, QOfficialMessageReply reply, TimeSpan duration)
+    public Task SendTypingAsync(QOfficialMessageTarget target, QOfficialMessageReply reply, TimeSpan duration, CancellationToken cancellationToken = default)
     {
         var (channel, messageId) = ResolveDirectReply(target, reply);
-        return messages.SendTypingAsync(channel, messageId, duration);
+        return messages.SendTypingAsync(channel, messageId, duration, cancellationToken: cancellationToken);
     }
 
     public IQOfficialMessageStream BeginStream(QOfficialMessageTarget target, QOfficialMessageReply reply,
@@ -252,7 +253,7 @@ internal sealed class QQOfficialMessageService(
     }
 
     public async Task<string> SendMarkdownAsync(QOfficialMessageTarget target, QOfficialMarkdown markdown,
-        QOfficialKeyboard? keyboard = null, QOfficialMessageReply? reply = null)
+        QOfficialKeyboard? keyboard = null, QOfficialMessageReply? reply = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(target);
         if (!CanSendMarkdown(target, markdown, keyboard))
@@ -263,18 +264,26 @@ internal sealed class QQOfficialMessageService(
             Markdown = QQOfficialMessageMapper.MapMarkdown(markdown),
             Keyboard = QQOfficialMessageMapper.MapKeyboard(keyboard, target.Scene == QOfficialMessageScene.Channel)
         };
-        var sent = await SendToTargetAsync(target, request, reply, "[Markdown]")
+        var sent = await SendToTargetAsync(target, request, reply, "[Markdown]", cancellationToken: cancellationToken)
             .ConfigureAwait(false);
         return sent.MessageId;
     }
 
     public async Task AcknowledgeInteractionAsync(string interactionId,
-        QOfficialInteractionResponseCode code = QOfficialInteractionResponseCode.Success)
+        QOfficialInteractionResponseCode code = QOfficialInteractionResponseCode.Success, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(interactionId);
         if (!Enum.IsDefined(code)) throw new ArgumentOutOfRangeException(nameof(code));
-        await api.AcknowledgeInteractionAsync(interactionId, code).ConfigureAwait(false);
+        await api.AcknowledgeInteractionAsync(interactionId, code, cancellationToken: cancellationToken).ConfigureAwait(false);
         logger?.Info($"已回应 QQ 官方按钮互动 {interactionId}: {code}");
+    }
+
+    public Task AcknowledgeAsync(InteractionEvent interaction, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(interaction);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (interaction.Acknowledgement == InteractionAcknowledgement.Acknowledged) return Task.CompletedTask;
+        return api.AcknowledgeInteractionAsync(interaction.InteractionId, cancellationToken: cancellationToken);
     }
 
     private Channel ResolveChannel(QOfficialMessageTarget target)

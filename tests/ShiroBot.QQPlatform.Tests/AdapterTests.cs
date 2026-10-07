@@ -200,7 +200,7 @@ public sealed class AdapterTests
     }
 
     [Fact]
-    public void QuoteMessageElementsResolveStaleReferenceIndexAndProvideMediaFallback()
+    public async Task QuoteMessageElementsResolveStaleReferenceIndexAndProvideMediaFallback()
     {
         var data = JsonDocument.Parse("""{"id":"quote-message","group_openid":"group-1","author":{"member_openid":"user-1","username":"引用者"},"content":"回复内容","message_type":103,"message_scene":{"ext":["ref_msg_idx=TMP_stale","msg_idx=REFIDX_CURRENT"]},"msg_elements":[{"msg_idx":"REFIDX_ORIGINAL","content":"=== 消息 1 ===\n[消息内容] 原图说明\n[消息类型] 引用消息","attachments":[{"url":"https://example.org/quoted.png","content_type":"image/png","filename":"quoted.png"}]}]}""").RootElement;
         var incoming = Assert.IsType<MessageEvent>(QQEventTranslator.Translate(
@@ -222,6 +222,11 @@ public sealed class AdapterTests
             segment => segment.GetProperty("type").GetString() == "image");
         Assert.Equal("https://example.org/quoted.png", image.GetProperty("url").GetString());
         Assert.Equal("quoted.png", image.GetProperty("filename").GetString());
+        var sdkOriginal = await messages.GetMessageAsync(enriched.Channel, enriched.GetQuote()!.MessageId);
+        Assert.NotNull(sdkOriginal);
+        Assert.Equal("原图说明", sdkOriginal.GetPlainText());
+        Assert.Equal("https://example.org/quoted.png", Assert.Single(sdkOriginal.Segments.OfType<ImageSegment>()).Uri);
+        Assert.Null(await messages.GetMessageAsync(Channel.Group("other-group"), enriched.GetQuote()!.MessageId));
     }
 
     [Fact]
@@ -270,7 +275,7 @@ public sealed class AdapterTests
     }
 
     [Fact]
-    public void QuoteOfQuoteWithoutCacheStillExposesAncestorsFromMessageElements()
+    public async Task QuoteOfQuoteWithoutCacheStillExposesAncestorsFromMessageElements()
     {
         var handler = new FakeHandler();
         using var http = new HttpClient(handler);
@@ -282,6 +287,13 @@ public sealed class AdapterTests
         var chain = ((JsonElement)messages.RegisterIncoming(incoming).Raw!).GetProperty("resolved_reply_chain");
         Assert.Equal(2, chain.GetArrayLength());
         Assert.Equal("1", chain[1].GetProperty("segments")[0].GetProperty("text").GetString());
+        var parent = await messages.GetMessageAsync(incoming.Channel, incoming.GetQuote()!.MessageId);
+        Assert.NotNull(parent);
+        Assert.Equal("2", parent.GetPlainText());
+        var ancestor = await messages.GetMessageAsync(incoming.Channel, parent.GetQuote()!.MessageId);
+        Assert.NotNull(ancestor);
+        Assert.Equal("1", ancestor.GetPlainText());
+        Assert.Null(ancestor.GetQuote());
     }
 
     [Fact]
@@ -340,7 +352,7 @@ public sealed class AdapterTests
     [InlineData("C2C_MSG_REJECT", QEventKinds.OfficialC2CMsgReject, false, """{"timestamp":1767196800,"openid":"u1"}""", "u1")]
     public void LifecycleEventsKeepChannelEventIdAndOperator(string type, string kind, bool group, string json, string operatorId)
     {
-        var translated = Assert.IsType<PlatformEvent>(QQEventTranslator.Translate(
+        var translated = Assert.IsAssignableFrom<PlatformEvent>(QQEventTranslator.Translate(
             new GatewayPayload(0, JsonDocument.Parse(json).RootElement, 5, type, "event-9"), "bot-1"));
         Assert.Equal(kind, translated.Kind);
         Assert.Equal(group ? ChannelType.Group : ChannelType.Direct, translated.Channel!.Type);
@@ -635,7 +647,7 @@ public sealed class AdapterTests
     public async Task InteractionIsTranslatedAndAcknowledged()
     {
         var data = JsonDocument.Parse("""{"id":"interaction-1","type":11,"scene":"group","chat_type":1,"group_openid":"group-1","group_member_openid":"member-1","data":{"resolved":{"button_data":"rich:main","button_id":"home"}}}""").RootElement;
-        var platformEvent = Assert.IsType<PlatformEvent>(QQEventTranslator.Translate(
+        var platformEvent = Assert.IsAssignableFrom<PlatformEvent>(QQEventTranslator.Translate(
             new GatewayPayload(0, data, 10, "INTERACTION_CREATE", "event-1"), "bot-1"));
         Assert.Equal(QEventKinds.OfficialButtonInteraction, platformEvent.Kind);
         var interaction = Assert.IsType<QOfficialButtonInteraction>(platformEvent.Raw);
