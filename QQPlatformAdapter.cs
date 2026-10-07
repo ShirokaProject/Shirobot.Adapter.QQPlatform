@@ -12,11 +12,11 @@ using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
 
 [assembly: ShiroBotApiCompatibility("0.9.1", "0.9.1")]
-[assembly: RequiresShiroBotPackage("shirobot.model.qq", MinimumVersion = "0.9.2")]
+[assembly: RequiresShiroBotPackage("shirobot.model.qq", MinimumVersion = "0.9.8")]
 
 namespace ShiroBot.Adapter.QQPlatform;
 
-[BotAdapter("qq-official", Name = "QQPlatformAdapter", Version = "0.3.0",
+[BotAdapter("qq-official", Name = "QQPlatformAdapter", Version = "0.4.0",
     Description = "QQ Official Bot OpenAPI adapter", Author = "ShirokaProject",
     Protocol = "qq-official", IsSingleFile = true)]
 public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConfigurableComponent<QQPlatformConfig>
