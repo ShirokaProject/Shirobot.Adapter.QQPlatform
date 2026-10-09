@@ -11,9 +11,33 @@ namespace ShiroBot.Adapter.QQPlatform.AdapterImpl;
 internal sealed class QQOfficialMessageService(
     QQOpenApiClient api, QQMessageService messages, IConsoleLogger? logger = null,
     Func<string, string?>? groupNameResolver = null)
-    : IQOfficialMessageApi, IQOfficialDirectMessageApi, IQOfficialMediaApi, IMessageInteractionService
+    : IQOfficialMessageApi, IQOfficialDirectMessageApi, IQOfficialMediaApi, IMessageInteractionService, IFileService
 {
     private const long MaxUploadSize = 200L * 1024 * 1024;
+
+    public FileCapabilities GetFileCapabilities(Channel channel) => new()
+    {
+        CanUpload = channel.Type is ChannelType.Group or ChannelType.Direct,
+        UploadPublishes = false
+    };
+
+    public async Task<FileUploadResult> UploadAsync(Channel channel, FileUploadRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.Uri);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.FileName);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!GetFileCapabilities(channel).CanUpload) throw new NotSupportedException("QQ official file uploads support group and direct channels only.");
+        using var source = await QQMediaSource.ResolveAsync(new FileSegment(request.Uri) { FileName = request.FileName }).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var fileInfo = source.Path is not null
+            ? await api.UploadLocalAsync(channel, 4, source.Path, source.FileName, cancellationToken).ConfigureAwait(false)
+            : await api.UploadRemoteAsync(channel, 4, source.Url!, source.FileName, cancellationToken).ConfigureAwait(false);
+        return new() { FileId = fileInfo, IsPublished = false };
+    }
+
 
     public async Task<string> SendAsync(QOfficialMessageTarget target, QOfficialMessage message,
         QOfficialMessageReply? reply = null, CancellationToken cancellationToken = default)

@@ -84,3 +84,9 @@ Markdown 可设置 `ForceVerifyImageResource = true`，图片转存失败时拒�
 
 SDK 和 QQ Model ABI 已升级为 1.0.0.0，所有 ID 统一使用字符串；群管理与 Milky 共用 `IQGroupApi`。
 旧 `IQOfficialGroupApi` 已删除。引用 QQ Model 的插件和适配器均需重新编译并同步更新宿主。
+
+## 通用文件服务
+
+通过 `GetAdapterExtension<IFileService>()` 探测上传能力。支持群聊及私聊上传，返回未发布的媒体凭据（`IsPublished=false`）；需要发送文件时使用 `FileSegment`。现有官方媒体扩展继续保留。
+
+此次版本使用 SDK 0.9.9 / SDK ABI 1.1.0.0，要求宿主 0.9.9 或更高版本；QQ Model ABI 仍为 1.0.0.0。

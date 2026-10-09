@@ -38,7 +38,7 @@ jobs:
           mkdir -p ../Shirobot
           git -C ../Shirobot init
           git -C ../Shirobot remote add origin https://github.com/ShirokaProject/ShiroBot.git
-          git -C ../Shirobot fetch --depth=1 origin refs/tags/v0.9.8
+          git -C ../Shirobot fetch --depth=1 origin refs/tags/v0.9.9
           git -C ../Shirobot checkout --detach FETCH_HEAD
 
       - name: Setup .NET

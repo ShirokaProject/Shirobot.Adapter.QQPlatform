@@ -1,3 +1,4 @@
+using ShiroBot.SDK.Adapter;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -865,6 +866,31 @@ public sealed class AdapterTests
             .GetProperty("buttons")[0].GetProperty("action").GetProperty("permission")
             .GetProperty("specify_role_ids");
         Assert.Equal("role-1", roleIds[0].GetString());
+    }
+
+    [Fact]
+    public async Task GenericFileUploadReturnsUnpublishedMediaCredential()
+    {
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
+        IFileService files = new QQOfficialMessageService(api, new QQMessageService(api));
+        Assert.True(files.GetFileCapabilities(Channel.Group("group-1")).CanUpload);
+        Assert.False(files.GetFileCapabilities(Channel.Group("group-1")).UploadPublishes);
+        var uploaded = await files.UploadAsync(Channel.Group("group-1"),
+            new FileUploadRequest { Uri = "https://example.org/report.pdf", FileName = "report.pdf" });
+        Assert.Equal("file-1", uploaded.FileId);
+        Assert.False(uploaded.IsPublished);
+        Assert.Equal(2, handler.Requests.Count);
+        var body = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+        Assert.Equal(4, body.GetProperty("file_type").GetInt32());
+        Assert.False(body.GetProperty("srv_send_msg").GetBoolean());
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => files.UploadAsync(Channel.Group("group-1"),
+            new FileUploadRequest { Uri = "https://example.org/report.pdf", FileName = "report.pdf" }, canceled.Token));
+        Assert.Equal(2, handler.Requests.Count);
     }
 
     [Fact]
