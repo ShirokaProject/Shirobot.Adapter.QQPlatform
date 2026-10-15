@@ -58,6 +58,16 @@ public sealed class QQPlatformConfig
         Group = "connection", GroupLabel = "连接", GroupOrder = 40, Order = 30)]
     public int StartupTimeoutSeconds { get; set; } = 30;
 
+    [ConfigField("消息及引用上下文保留时间，单位分钟，必须大于 0；同时受消息上下文数量上限限制。修改后重启适配器生效。",
+        Label = "消息上下文保留时间（分钟）", Min = 1, Default = 60,
+        Group = "context", GroupLabel = "消息上下文", GroupOrder = 45, Order = 10)]
+    public int MessageContextRetentionMinutes { get; set; } = 60;
+
+    [ConfigField("每个适配器实例最多缓存的消息数量，群聊和私聊共用此上限，必须大于 0；超出时淘汰最早进入缓存的消息。修改后重启适配器生效。",
+        Label = "消息上下文数量上限", Min = 1, Default = 4096,
+        Group = "context", GroupLabel = "消息上下文", GroupOrder = 45, Order = 20)]
+    public int MessageContextMaxMessages { get; set; } = 4096;
+
     [ConfigField("获取访问令牌的 HTTPS 地址，通常无需修改。",
         Label = "令牌接口地址", Default = "https://api.bot.qq.com/app/getAppAccessToken",
         Group = "advanced", GroupLabel = "高级", GroupOrder = 50, Order = 10)]
@@ -85,6 +95,8 @@ public sealed class QQPlatformConfig
             throw new ArgumentOutOfRangeException(nameof(ShardId), "ShardId must be within ShardCount.");
         if (ReconnectMinimumSeconds <= 0 || ReconnectMaximumSeconds < ReconnectMinimumSeconds)
             throw new ArgumentOutOfRangeException(nameof(ReconnectMaximumSeconds));
+        if (MessageContextMaxMessages <= 0) throw new ArgumentOutOfRangeException(nameof(MessageContextMaxMessages));
+        if (MessageContextRetentionMinutes <= 0) throw new ArgumentOutOfRangeException(nameof(MessageContextRetentionMinutes));
         if (StartupTimeoutSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(StartupTimeoutSeconds));
         if (!Uri.TryCreate(TokenEndpoint, UriKind.Absolute, out var token) || token.Scheme != Uri.UriSchemeHttps)
             throw new ArgumentException("TokenEndpoint must be an HTTPS URL.");

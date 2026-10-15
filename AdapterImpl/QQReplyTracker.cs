@@ -17,10 +17,91 @@ internal sealed record QQReplyResolution(IReadOnlyList<QQQuotedMessage> Chain, s
 /// QQ gives no way to fetch a message by id, so resolution is layered: reference index (REFIDX_*, plus aliases
 /// learned for TMP_* placeholders) → unique content match against the cache → whatever <c>msg_elements</c> describes.
 /// </summary>
-internal sealed class QQReplyTracker
+internal sealed class QQReplyTracker : IDisposable
 {
-    private const int MaxCachedMessages = 4096;
+    private readonly int _maxCachedMessages;
     private const int MaxChainLength = 32;
+    private const int MaxIndexesPerMessage = 64;
+    private DateTimeOffset _nextExpiry = DateTimeOffset.MaxValue;
+    private bool _disposed;
+
+    private readonly TimeProvider _clock;
+    private readonly TimeSpan _retention;
+    private readonly ITimer _cleanupTimer;
+
+    public QQReplyTracker(TimeSpan? retention = null, TimeProvider? clock = null, int maxCachedMessages = 4096)
+    {
+        if (maxCachedMessages <= 0) throw new ArgumentOutOfRangeException(nameof(maxCachedMessages));
+        _maxCachedMessages = maxCachedMessages;
+        _retention = retention ?? TimeSpan.FromMinutes(60);
+        if (_retention <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(retention));
+        _clock = clock ?? TimeProvider.System;
+        _cleanupTimer = _clock.CreateTimer(_ => Cleanup(), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+    }
+
+    public void Dispose()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _cleanupTimer.Dispose();
+            _byId.Clear();
+            _byIndex.Clear();
+            _order.Clear();
+        }
+    }
+
+    internal void Cleanup()
+    {
+        lock (_gate)
+            if (!_disposed) PruneExpired();
+    }
+
+    private void PruneExpired()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var now = _clock.GetUtcNow();
+        if (now < _nextExpiry) return;
+        PruneExpiredCore(now);
+    }
+
+    private void PruneExpiredCore(DateTimeOffset now)
+    {
+        _nextExpiry = DateTimeOffset.MaxValue;
+        var count = _order.Count;
+        for (var n = 0; n < count; n++)
+        {
+            var key = _order.Dequeue();
+            if (!_byId.TryGetValue(key, out var entry)) continue;
+            if (entry.ExpiresAt <= now)
+            {
+                _byId.Remove(key);
+                Detach(key, entry);
+                continue;
+            }
+            _order.Enqueue(key);
+            if (entry.ExpiresAt < _nextExpiry) _nextExpiry = entry.ExpiresAt;
+            var expiredAncestor = false;
+            foreach (var deadline in entry.ChainExpiresAt)
+            {
+                if (deadline <= now) expiredAncestor = true;
+                else if (deadline < _nextExpiry) _nextExpiry = deadline;
+            }
+            if (!expiredAncestor) continue;
+            var retained = entry.Chain.Where((_, i) => entry.ChainExpiresAt[i] > now).ToArray();
+            entry.ChainExpiresAt = entry.ChainExpiresAt.Where(expiry => expiry > now).ToArray();
+            entry.Chain = retained;
+            entry.Event = entry.Event with
+            {
+                Segments = entry.Event.Segments.Select(segment => segment is QuoteSegment quote
+                    ? quote with { Preview = retained.Length > 0 ? Preview(retained[0]) : null }
+                    : segment).ToArray()
+            };
+            if (QQMessageService.AddResolvedReplyChain(entry.Event.Raw, retained) is { } raw)
+                entry.Event = entry.Event with { Raw = raw };
+        }
+    }
 
     private readonly object _gate = new();
     private readonly Dictionary<MessageKey, Entry> _byId = [];
@@ -30,23 +111,44 @@ internal sealed class QQReplyTracker
     private readonly record struct MessageKey(ChannelType Type, string ChannelId, string MessageId);
     private readonly record struct IndexKey(ChannelType Type, string ChannelId, string Index);
 
-    private sealed record Entry(MessageEvent Event, IReadOnlyList<QQQuotedMessage> Chain)
+    private sealed class Entry(MessageEvent message, IReadOnlyList<QQQuotedMessage> chain, DateTimeOffset expiresAt, DateTimeOffset[] chainExpiresAt)
     {
+        public MessageEvent Event { get; set; } = message;
+        public IReadOnlyList<QQQuotedMessage> Chain { get; set; } = chain;
+        public DateTimeOffset ExpiresAt { get; } = expiresAt;
+        public DateTimeOffset[] ChainExpiresAt { get; set; } = chainExpiresAt;
         public HashSet<string> Indexes { get; } = new(StringComparer.Ordinal);
+        public Queue<string> IndexOrder { get; } = new();
     }
 
     public void Remember(MessageEvent message, string? referenceIndex, IReadOnlyList<QQQuotedMessage>? chain = null)
     {
-        var entry = new Entry(message, chain ?? []);
         var channel = message.Channel;
         var key = new MessageKey(channel.Type, channel.Id, message.MessageId);
         lock (_gate)
         {
+            PruneExpired();
+            var expiresAt = _clock.GetUtcNow() + _retention;
+            var ancestors = (chain ?? []).Take(MaxChainLength).ToArray();
+            var deadlines = ancestors.Select(ancestor =>
+            {
+                if (_byId.TryGetValue(new MessageKey(channel.Type, channel.Id, ancestor.MessageId), out var parent))
+                    return parent.ExpiresAt;
+                // Preserve the original deadline when an ancestor survives only as a quote snapshot.
+                foreach (var existing in _byId.Values.Where(item => item.Event.Channel.Type == channel.Type && item.Event.Channel.Id == channel.Id))
+                    for (var i = 0; i < existing.Chain.Count; i++)
+                        if (existing.Chain[i].MessageId == ancestor.MessageId) return existing.ChainExpiresAt[i];
+                return expiresAt;
+            }).ToArray();
+            if (expiresAt < _nextExpiry) _nextExpiry = expiresAt;
+            foreach (var deadline in deadlines)
+                if (deadline < _nextExpiry) _nextExpiry = deadline;
+            var entry = new Entry(message, ancestors, expiresAt, deadlines);
             if (_byId.TryGetValue(key, out var previous)) Detach(key, previous);
             else _order.Enqueue(key);
             _byId[key] = entry;
             if (!string.IsNullOrWhiteSpace(referenceIndex)) Attach(channel, referenceIndex, entry);
-            while (_order.Count > MaxCachedMessages)
+            while (_order.Count > _maxCachedMessages)
             {
                 var oldest = _order.Dequeue();
                 if (_byId.Remove(oldest, out var evicted)) Detach(oldest, evicted);
@@ -58,6 +160,7 @@ internal sealed class QQReplyTracker
     {
         lock (_gate)
         {
+            PruneExpired();
             if (_byId.TryGetValue(new MessageKey(channel.Type, channel.Id, messageId), out var entry)) return entry.Event;
             // QQ can describe a quoted message that was never delivered to the bot. Expose the
             // structured snapshot through the SDK as well as the log preview; do not parse previews.
@@ -87,9 +190,12 @@ internal sealed class QQReplyTracker
     public QQQuotedMessage[]? ChainOf(Channel channel, string messageId)
     {
         lock (_gate)
+        {
+            PruneExpired();
             return _byId.TryGetValue(new MessageKey(channel.Type, channel.Id, messageId), out var entry)
                 ? BuildChain(entry)
                 : null;
+        }
     }
 
     /// <summary>The REFIDX_* value to put in <c>message_reference</c> when quoting this message.</summary>
@@ -97,6 +203,7 @@ internal sealed class QQReplyTracker
     {
         lock (_gate)
         {
+            PruneExpired();
             if (!_byId.TryGetValue(new MessageKey(channel.Type, channel.Id, messageId), out var entry)) return null;
             return entry.Indexes.FirstOrDefault(index => index.StartsWith("REFIDX_", StringComparison.Ordinal))
                 ?? entry.Indexes.FirstOrDefault(index => !IsTemporary(index));
@@ -117,6 +224,7 @@ internal sealed class QQReplyTracker
 
         lock (_gate)
         {
+            PruneExpired();
             foreach (var key in keys)
                 if (_byIndex.TryGetValue(new IndexKey(message.Channel.Type, message.Channel.Id, key!), out var hit)
                     && hit.Event.MessageId != message.MessageId)
@@ -146,7 +254,7 @@ internal sealed class QQReplyTracker
             if (cached is not null)
             {
                 foreach (var item in BuildChain(cached))
-                    if (result.All(existing => existing.MessageId != item.MessageId)) result.Add(item);
+                    if (result.Count < MaxChainLength && result.All(existing => existing.MessageId != item.MessageId)) result.Add(item);
                 break;
             }
             result.Add(new QQQuotedMessage(i == 0 ? headId : $"{headId}#{i}",
@@ -222,8 +330,35 @@ internal sealed class QQReplyTracker
 
     private void Attach(Channel channel, string index, Entry entry)
     {
-        _byIndex[new IndexKey(channel.Type, channel.Id, index)] = entry;
-        entry.Indexes.Add(index);
+        var key = new IndexKey(channel.Type, channel.Id, index);
+        if (_byIndex.TryGetValue(key, out var previous) && !ReferenceEquals(previous, entry))
+        {
+            previous.Indexes.Remove(index);
+            // Remove the old ownership record as well, so repeated transfers cannot grow its queue.
+            var count = previous.IndexOrder.Count;
+            for (var i = 0; i < count; i++)
+            {
+                var old = previous.IndexOrder.Dequeue();
+                if (old != index) previous.IndexOrder.Enqueue(old);
+            }
+        }
+        _byIndex[key] = entry;
+        if (entry.Indexes.Add(index)) entry.IndexOrder.Enqueue(index);
+        while (entry.IndexOrder.Count > MaxIndexesPerMessage)
+        {
+            // Prefer retaining the message's real reference index over temporary aliases.
+            var oldest = entry.IndexOrder.Dequeue();
+            if (oldest.StartsWith("REFIDX_", StringComparison.Ordinal)
+                && entry.IndexOrder.Any(IsTemporary))
+            {
+                entry.IndexOrder.Enqueue(oldest);
+                continue;
+            }
+            entry.Indexes.Remove(oldest);
+            var oldKey = new IndexKey(channel.Type, channel.Id, oldest);
+            if (_byIndex.TryGetValue(oldKey, out var owner) && ReferenceEquals(owner, entry))
+                _byIndex.Remove(oldKey);
+        }
     }
 
     private void Detach(MessageKey key, Entry entry)
@@ -293,6 +428,8 @@ internal sealed class QQReplyTracker
     public string DescribeRecent(Channel channel, string currentMessageId)
     {
         lock (_gate)
+        {
+            PruneExpired();
             return string.Join(" | ", _order.Reverse()
                 .Where(key => key.Type == channel.Type && key.ChannelId == channel.Id && key.MessageId != currentMessageId)
                 .Take(8)
@@ -301,5 +438,6 @@ internal sealed class QQReplyTracker
                       $"text={Preview(NormalizedText(entry.Event.Segments))}"
                     : null)
                 .Where(text => text is not null));
+        }
     }
 }

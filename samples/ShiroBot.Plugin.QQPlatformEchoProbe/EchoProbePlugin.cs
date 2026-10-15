@@ -1,7 +1,6 @@
 using ShiroBot.SDK.Core;
 using ShiroBot.SDK.Plugin;
 
-[assembly: ShiroBotApiCompatibility("0.9", "0.9")]
 
 namespace ShiroBot.Plugin.QQPlatformEchoProbe;
 

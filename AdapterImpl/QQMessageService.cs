@@ -13,7 +13,9 @@ namespace ShiroBot.Adapter.QQPlatform.AdapterImpl;
 internal sealed class QQMessageService(
     QQOpenApiClient api,
     IConsoleLogger? logger = null,
-    Func<User?>? getSelfUser = null) : IMessageService
+    Func<User?>? getSelfUser = null,
+    TimeSpan? contextRetention = null,
+    int contextMaxMessages = 4096) : IMessageService, IDisposable
 {
     private readonly Dictionary<string, int> _sequences = [];
     private readonly Queue<string> _sequenceOrder = new();
@@ -21,7 +23,21 @@ internal sealed class QQMessageService(
     private readonly Queue<string> _recentOrder = new();
     private readonly Dictionary<string, DateTimeOffset> _arrivals = [];
     private readonly Queue<string> _arrivalOrder = new();
-    private readonly QQReplyTracker _replies = new();
+    private readonly QQReplyTracker _replies = new(contextRetention, maxCachedMessages: contextMaxMessages);
+
+    public void Dispose()
+    {
+        _replies.Dispose();
+        lock (_recent) { _recent.Clear(); _recentOrder.Clear(); }
+        lock (_sequences)
+        {
+            _sequences.Clear();
+            _sequenceOrder.Clear();
+            _arrivals.Clear();
+            _arrivalOrder.Clear();
+        }
+        lock (_interactionReplies) { _interactionReplies.Clear(); _interactionReplyOrder.Clear(); }
+    }
 
     public MessageEvent RegisterIncoming(MessageEvent message)
     {
@@ -345,6 +361,7 @@ internal sealed class QQMessageService(
             else request = request with { EventId = reply.EventId, MessageSequence = reply.MessageSequence };
         }
         var sent = await api.SendMessageAsync(route, request, cancellationToken).ConfigureAwait(false);
+        api.TakeSentReferenceIndex(sent.MessageId);
         logger?.Info($"已发送 QQ 官方消息到 {targetName}: {description.Replace("\r", "\\r").Replace("\n", "\\n")}");
         return sent;
     }
@@ -394,9 +411,9 @@ internal sealed class QQMessageService(
             JsonSerializer.SerializeToElement(request, QQJson.Options))];
     }
 
-    private static JsonElement? AddResolvedReplyChain(object? raw, IReadOnlyList<QQQuotedMessage> chain)
+    internal static JsonElement? AddResolvedReplyChain(object? raw, IReadOnlyList<QQQuotedMessage> chain)
     {
-        if (raw is not JsonElement { ValueKind: JsonValueKind.Object } rawEvent || chain.Count == 0) return null;
+        if (raw is not JsonElement { ValueKind: JsonValueKind.Object } rawEvent) return null;
         var document = JsonNode.Parse(rawEvent.GetRawText())?.AsObject();
         if (document is null) return null;
         document["resolved_reply_chain"] = new JsonArray(chain.Select(item => (JsonNode)new JsonObject

@@ -1,5 +1,4 @@
 using System.Net.Http.Json;
-using System.Collections.Concurrent;
 using System.Text.Json;
 using ShiroBot.Adapter.QQPlatform.Wire;
 using ShiroBot.Model.QQ;
@@ -12,7 +11,7 @@ internal sealed class QQOpenApiClient
     private readonly QQApiTransport _transport;
     private readonly QQChunkedUploadClient _chunked;
     private readonly QQUploadCache _uploads = new();
-    private readonly ConcurrentDictionary<string, string> _sentReferenceIndices = new(StringComparer.Ordinal);
+    private readonly QQBoundedCache<string> _sentReferenceIndices = new(4096);
     private readonly Dictionary<string, Task> _acknowledged = [];
     private readonly Queue<(string Id, Task Task)> _acknowledgementOrder = [];
 
@@ -53,17 +52,17 @@ internal sealed class QQOpenApiClient
         if (string.IsNullOrWhiteSpace(sent.Id))
             throw new InvalidDataException("QQ message response contains no message ID (it may be pending audit).");
         var result = new SentMessage(sent.Id);
-        if (!string.IsNullOrWhiteSpace(sent.ExtInfo?.ReferenceIndex))
-            _sentReferenceIndices[sent.Id] = sent.ExtInfo.ReferenceIndex;
         if (sent.Timestamp.ValueKind == JsonValueKind.String && DateTimeOffset.TryParse(sent.Timestamp.GetString(), out var timestamp))
             result = result with { Timestamp = timestamp };
         else if (sent.Timestamp.ValueKind == JsonValueKind.Number && sent.Timestamp.TryGetInt64(out var seconds))
             result = result with { Timestamp = DateTimeOffset.FromUnixTimeSeconds(seconds) };
+        if (!string.IsNullOrWhiteSpace(sent.ExtInfo?.ReferenceIndex))
+            _sentReferenceIndices.Set(sent.Id, sent.ExtInfo.ReferenceIndex, TimeSpan.FromMinutes(5));
         return result;
     }
 
     internal string? TakeSentReferenceIndex(string messageId) =>
-        _sentReferenceIndices.TryRemove(messageId, out var referenceIndex) ? referenceIndex : null;
+        _sentReferenceIndices.Take(messageId);
 
     public async Task SendTypingAsync(Channel channel, QQSendRequest message, CancellationToken cancellationToken = default)
     {

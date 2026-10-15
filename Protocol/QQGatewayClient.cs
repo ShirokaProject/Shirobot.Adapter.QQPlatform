@@ -50,19 +50,30 @@ internal sealed class QQGatewayClient(
     public async Task StopAsync()
     {
         if (_lifetime is null) return;
-        await _lifetime.CancelAsync().ConfigureAwait(false);
-        _queue?.Writer.TryComplete();
-        foreach (var task in new[] { _runner, _worker })
+        var lifetime = _lifetime;
+        var failures = new List<Exception>();
+        try
         {
-            if (task is null) continue;
-            try { await task.ConfigureAwait(false); }
-            catch (OperationCanceledException) { }
+            try { await lifetime.CancelAsync().ConfigureAwait(false); }
+            catch (Exception ex) { failures.Add(ex); }
+            _queue?.Writer.TryComplete();
+            foreach (var task in new[] { _runner, _worker })
+            {
+                if (task is null) continue;
+                try { await task.ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                catch (Exception ex) { failures.Add(ex); }
+            }
         }
-        _lifetime.Dispose();
-        _lifetime = null;
-        _runner = null;
-        _worker = null;
-        _queue = null;
+        finally
+        {
+            lifetime.Dispose();
+            _lifetime = null;
+            _runner = null;
+            _worker = null;
+            _queue = null;
+        }
+        if (failures.Count > 0) throw new AggregateException("QQ gateway stop failed.", failures);
     }
 
     /// <summary>Events run one at a time and in order, but never stall the socket reader or the heartbeat.</summary>
@@ -149,7 +160,7 @@ internal sealed class QQGatewayClient(
         var interval = hello.Data.Deserialize<HelloData>(QQJson.Options)?.HeartbeatInterval ?? 0;
         if (interval <= 0) throw new InvalidDataException("QQ gateway sent an invalid heartbeat interval.");
 
-        var sendGate = new SemaphoreSlim(1, 1);
+        using var sendGate = new SemaphoreSlim(1, 1);
         async Task SendAsync(JsonObject envelope, CancellationToken ct)
         {
             var bytes = JsonSerializer.SerializeToUtf8Bytes(envelope, QQJson.Options);
@@ -236,7 +247,6 @@ internal sealed class QQGatewayClient(
             await connected.CancelAsync().ConfigureAwait(false);
             try { await heartbeat.ConfigureAwait(false); }
             catch (OperationCanceledException) { }
-            sendGate.Dispose();
         }
     }
 

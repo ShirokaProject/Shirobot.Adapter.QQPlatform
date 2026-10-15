@@ -11,12 +11,11 @@ using ShiroBot.SDK.Core;
 using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
 
-[assembly: ShiroBotApiCompatibility("0.9.2", "0.9.2")]
-[assembly: RequiresShiroBotPackage("shirobot.model.qq", MinimumVersion = "0.9.9")]
+[assembly: RequiresShiroBotPackage("shirobot.model.qq", MinimumVersion = "1.0.0")]
 
 namespace ShiroBot.Adapter.QQPlatform;
 
-[BotAdapter("qq-official", Name = "QQPlatformAdapter", Version = "0.4.1",
+[BotAdapter("qq-official", Name = "QQPlatformAdapter", Version = "0.4.2",
     Description = "QQ Official Bot OpenAPI adapter", Author = "ShirokaProject",
     Protocol = "qq-official", IsSingleFile = true)]
 public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConfigurableComponent<QQPlatformConfig>
@@ -26,7 +25,7 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
     private readonly QQChannelService _channels = new();
     private readonly Queue<string> _seenOrder = new();
     private readonly HashSet<string> _seen = [];
-    private readonly Dictionary<string, (string? Name, DateTimeOffset ExpiresAt)> _groupNames = [];
+    private readonly QQBoundedCache<string?> _groupNames = new(4096);
     private HttpClient? _http;
     private HttpClient? _uploadHttp;
     private QQGatewayClient? _gateway;
@@ -85,7 +84,8 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
             Logger.Warning($"QQ Official /users/@me lookup failed ({ex.GetType().Name}); " +
                 "will use the Gateway READY identity.");
         }
-        _messages = new QQMessageService(api, Logger, () => _users.Self);
+        _messages = new QQMessageService(api, Logger, () => _users.Self,
+            TimeSpan.FromMinutes(config.MessageContextRetentionMinutes), config.MessageContextMaxMessages);
         _officialMessages = new QQOfficialMessageService(api, _messages, Logger, GetCachedGroupName);
         _gateway = new QQGatewayClient(config, api, tokens, DispatchAsync, user =>
         {
@@ -139,23 +139,30 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
 
     public async Task StopAsync()
     {
-        if (_gateway is not null) await _gateway.StopAsync().ConfigureAwait(false);
-        _gateway = null;
-        _messages = null;
-        _officialMessages = null;
-        _api = null;
-        _officialGroups = null;
-        _channels.Attach(null);
-        _http?.Dispose();
-        _http = null;
-        _uploadHttp?.Dispose();
-        _uploadHttp = null;
-        _selfId = null;
-        _users.Self = null;
-        _config = null;
-        _seen.Clear();
-        _seenOrder.Clear();
-        _groupNames.Clear();
+        try
+        {
+            if (_gateway is not null) await _gateway.StopAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _gateway = null;
+            _messages?.Dispose();
+            _messages = null;
+            _officialMessages = null;
+            _api = null;
+            _officialGroups = null;
+            _channels.Attach(null);
+            _http?.Dispose();
+            _http = null;
+            _uploadHttp?.Dispose();
+            _uploadHttp = null;
+            _selfId = null;
+            _users.Self = null;
+            _config = null;
+            _seen.Clear();
+            _seenOrder.Clear();
+            _groupNames.Clear();
+        }
     }
 
     private async Task DispatchAsync(GatewayPayload payload)
@@ -270,8 +277,7 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
 
     private async Task<string?> GetGroupNameAsync(string groupOpenId)
     {
-        if (_groupNames.TryGetValue(groupOpenId, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
-            return cached.Name;
+        if (_groupNames.TryGet(groupOpenId, out var cached)) return cached;
         string? name = null;
         try
         {
@@ -282,13 +288,12 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
         {
             if (_config?.TraceEvents == true) Logger.Warning($"QQ group name lookup failed: {ex.Message}");
         }
-        _groupNames[groupOpenId] = (name, DateTimeOffset.UtcNow.Add(name is null ? TimeSpan.FromMinutes(5) : TimeSpan.FromHours(1)));
+        _groupNames.Set(groupOpenId, name, name is null ? TimeSpan.FromMinutes(5) : TimeSpan.FromHours(1));
         return name;
     }
 
     private string? GetCachedGroupName(string groupOpenId) =>
-        _groupNames.TryGetValue(groupOpenId, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow
-            ? cached.Name : null;
+        _groupNames.TryGet(groupOpenId, out var cached) ? cached : null;
 }
 
 internal sealed class QQUserService : IUserService

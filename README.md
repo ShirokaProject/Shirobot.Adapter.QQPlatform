@@ -25,6 +25,8 @@ trace_events = false
 reconnect_minimum_seconds = 2
 reconnect_maximum_seconds = 30
 startup_timeout_seconds = 30
+message_context_retention_minutes = 60
+message_context_max_messages = 4096
 ```
 
 | 字段 | 填写说明 |
@@ -38,6 +40,8 @@ startup_timeout_seconds = 30
 | `trace_events` | 是否输出收到的事件类型；排查问题时可设为 `true`，默认 `false`。 |
 | `reconnect_minimum_seconds` / `reconnect_maximum_seconds` | 重连退避的最小 / 最大等待时间，单位秒，默认 `2` / `30`；最小值必须大于 `0`，最大值不得小于最小值。 |
 | `startup_timeout_seconds` | 启动连接超时时间，单位秒，默认 `30`，必须大于 `0`。 |
+
+消息上下文通过 `message_context_retention_minutes` 配置保留分钟数，默认 `60`，必须大于 `0`；修改后重启适配器生效。按进入缓存的时间计算有效期，数量上限通过 `message_context_max_messages` 配置，默认 `4096`，必须大于 `0`，同一适配器实例的群聊与私聊共用此上限，先触及时间或数量限制即淘汰。访问时检查过期，并每分钟清理一次（空闲时也清理），同时清理引用索引及过期祖先快照。此选项不改变回复序号、交互凭据及其他缓存的规则，重启后上下文仍会丢失。
 
 ## 媒体文件发送
 
@@ -89,4 +93,10 @@ SDK 和 QQ Model ABI 已升级为 1.0.0.0，所有 ID 统一使用字符串；�
 
 通过 `GetAdapterExtension<IFileService>()` 探测上传能力。支持群聊及私聊上传，返回未发布的媒体凭据（`IsPublished=false`）；需要发送文件时使用 `FileSegment`。现有官方媒体扩展继续保留。
 
-此次版本使用 SDK 0.9.9 / SDK ABI 1.1.0.0，要求宿主 0.9.9 或更高版本；QQ Model ABI 仍为 1.0.0.0。
+0.4.2 使用 SDK 1.0.1 / SDK ABI 1.2.0.0，要求宿主 1.0.0 或更高版本；QQ Model ABI 为 1.0.0.0。
+
+## 缓存与资源释放
+
+群名缓存最多保留 4096 项，成功查询有效期为 1 小时，失败查询为 5 分钟；过期数据在后续缓存访问时清理。发送消息引用索引的暂存缓存最多 4096 项、有效期 5 分钟，正常发送后立即取走，频道发送不保留。上传缓存最多 500 项，重复添加同一个键不会累积淘汰记录。每条消息最多保留 64 个引用索引别名。
+
+消息上下文按最近的过期时间触发扫描，尚无消息或祖先快照过期时，缓存访问不会全量扫描。停止适配器时，即使网关停止失败，也会释放上下文清理定时器、消息缓存和 HTTP 客户端。
