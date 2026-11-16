@@ -12,6 +12,13 @@ using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
 using Xunit;
 
+using ShiroBot.Adapter.QQPlatform.Transport;
+using ShiroBot.Adapter.QQPlatform.Transport.Gateway;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Messaging;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Official;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Groups;
+using ShiroBot.Adapter.QQPlatform.Protocol.Support;
+using ShiroBot.Adapter.QQPlatform.Protocol.Mapping;
 namespace ShiroBot.QQPlatform.Tests;
 
 public sealed class AdapterTests
@@ -155,6 +162,27 @@ public sealed class AdapterTests
         Assert.Equal("<qqbot-at-user id=\"member-1\" /> 收到你的 @ 了",
             sent.GetProperty("markdown").GetProperty("content").GetString());
         Assert.Contains("已发送群消息到 测试群: @小明 收到你的 @ 了", logger.Messages);
+    }
+
+    [Fact]
+    public async Task MarkdownReplyCarriesMessageReferenceAndPassiveId()
+    {
+        var data = JsonDocument.Parse("""{"id":"incoming-md","group_openid":"group-1","author":{"member_openid":"member-1","username":"小明"},"content":"#replymd","message_scene":{"ext":["msg_idx=REFIDX_MD"]}}""").RootElement;
+        var incoming = Assert.IsType<MessageEvent>(QQEventTranslator.Translate(
+            new GatewayPayload(0, data, 1, "GROUP_AT_MESSAGE_CREATE", "event-md"), "bot-1"));
+        var handler = new FakeHandler();
+        using var http = new HttpClient(handler);
+        var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var messages = new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
+        messages.RegisterIncoming(incoming);
+        await messages.SendMessageAsync(incoming.Channel, new OutgoingMessage
+        {
+            Segments = [new QuoteSegment(incoming.MessageId), new MarkdownSegment("## 富媒体回复")]
+        });
+        var sent = JsonDocument.Parse(handler.Requests[^1].Body).RootElement;
+        Assert.Equal("incoming-md", sent.GetProperty("msg_id").GetString());
+        Assert.Equal("REFIDX_MD", sent.GetProperty("message_reference").GetProperty("message_id").GetString());
+        Assert.Equal(2, sent.GetProperty("msg_type").GetInt32());
     }
 
     [Fact]
@@ -303,8 +331,9 @@ public sealed class AdapterTests
         var handler = new FakeHandler();
         using var http = new HttpClient(handler);
         var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
         var channels = new QQChannelService();
-        channels.Attach(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
+        channels.Attach(new QQGroupService(api));
 
         var members = await channels.GetMembersAsync("group-1");
 
@@ -322,8 +351,9 @@ public sealed class AdapterTests
         var handler = new FakeHandler();
         using var http = new HttpClient(handler);
         var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
+        var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
         var channels = new QQChannelService();
-        channels.Attach(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
+        channels.Attach(new QQGroupService(api));
 
         await channels.MuteMemberAsync("group-1", "m1", TimeSpan.FromMinutes(10));
         var mute = JsonDocument.Parse(handler.Requests[^1].Body).RootElement.GetProperty("members")[0];
@@ -875,7 +905,7 @@ public sealed class AdapterTests
         using var http = new HttpClient(handler);
         var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
         var api = new QQOpenApiClient(http, config, new QQTokenProvider(http, config));
-        IFileService files = new QQOfficialMessageService(api, new QQMessageService(api));
+        IFileService files = new QQOfficialMediaService(api, new QQMessageService(api));
         Assert.True(files.GetFileCapabilities(Channel.Group("group-1")).CanUpload);
         Assert.False(files.GetFileCapabilities(Channel.Group("group-1")).UploadPublishes);
         var uploaded = await files.UploadAsync(Channel.Group("group-1"),

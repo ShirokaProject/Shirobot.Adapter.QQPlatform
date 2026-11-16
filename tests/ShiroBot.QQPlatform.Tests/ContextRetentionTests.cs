@@ -2,6 +2,13 @@ using ShiroBot.Adapter.QQPlatform.AdapterImpl;
 using ShiroBot.SDK.Models;
 using Xunit;
 
+using ShiroBot.Adapter.QQPlatform.Transport;
+using ShiroBot.Adapter.QQPlatform.Transport.Gateway;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Messaging;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Official;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Groups;
+using ShiroBot.Adapter.QQPlatform.Protocol.Support;
+using ShiroBot.Adapter.QQPlatform.Protocol.Mapping;
 namespace ShiroBot.QQPlatform.Tests;
 
 public sealed class ContextRetentionTests

@@ -10,6 +10,9 @@ skip_clone: true
 steps:
   - name: clone-sources
     image: bash
+    environment:
+      SHIROBOT_REF:
+        from_secret: shirobot_ref
     commands:
       - git init .
       - git remote add origin https://git.oeo.one/justme/Shirobot.Adapter.QQPlatform.git
@@ -18,7 +21,7 @@ steps:
       - mkdir -p ../Shirobot
       - git -C ../Shirobot init
       - git -C ../Shirobot remote add origin https://git.oeo.one/justme/Shirobot.git
-      - git -C ../Shirobot fetch --depth=1 origin master
+      - git -C ../Shirobot fetch --depth=1 origin "${SHIROBOT_REF:-master}"
       - git -C ../Shirobot checkout --detach FETCH_HEAD
 
   - name: verify

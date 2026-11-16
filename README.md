@@ -1,102 +1,52 @@
-# Offical QQAdapter
+# Shirobot.Adapter.QQPlatform
 
-当前发布：`v0.4.0`。本版本使用 SDK `0.9.8`，需要宿主 `0.9.8` 的新 ABI；旧宿主不兼容。
+ShiroBot 适配器生态中的一员，负责接入 QQ 官方机器人。
 
-基于 QQ Bot OpenAPI v2 的 QQ 官方机器人适配器。
+## 功能
 
-开发对接 QQ Open 平台日期：**2026-10-01**。
+接入：Access Token 鉴权、WebSocket 网关、心跳与断线重连。
 
-## Config 配置
+| 能力 | 单聊 | 群聊 |
+| --- | :-: | :-: |
+| 文本、Markdown、图片、语音、视频、文件 | ✓ | ✓ |
+| 引用回复、撤回 | ✓ | ✓ |
+| 按钮交互、图文卡片 | ✓ | ✓ |
+| 用户资料、头像 | ✓ | ✓ |
+| 流式消息 | ✓ | — |
+| 群资料、成员、群昵称、禁言、入群审批 | — | ✓ |
+| 群黑名单、机器人群内状态（内邀） | — | ✓ |
 
-首次加载适配器后，编辑适配器配置目录中的 `config.toml`。字段名使用小写下划线格式，填写后重启适配器生效。
+其他成员或私聊对方撤回消息时，QQ 不提供撤回事件，机器人无法感知。
 
-```toml
-# 必填：填写 QQ 开放平台中该机器人的 AppID 和 AppSecret
-app_id = "你的 AppID"
-app_secret = "你的 AppSecret"
+完整能力与事件见 [CAPABILITIES.md](./CAPABILITIES.md)，实现分层见 [ARCHITECTURE.md](./ARCHITECTURE.md)。
 
-# 以下为可选配置，通常保留默认值即可
-intents = 100663296
-shard_id = 0
-shard_count = 1
-token_endpoint = "https://api.bot.qq.com/app/getAppAccessToken"
-api_base_url = "https://api.bot.qq.com/"
-trace_events = false
-reconnect_minimum_seconds = 2
-reconnect_maximum_seconds = 30
-startup_timeout_seconds = 30
-message_context_retention_minutes = 60
-message_context_max_messages = 4096
-```
+### [官方更新跟进](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html)
 
-| 字段 | 填写说明 |
+最近维护：2026-11-17
+
+| 日期 | 更新内容 |
 | --- | --- |
-| `app_id` | 必填，机器人应用的 AppID，按字符串填写。 |
-| `app_secret` | 必填，同一机器人应用的 AppSecret；请勿提交到公开仓库。 |
-| `intents` | 事件订阅位掩码，默认 `100663296`，即 `(1 << 25) \| (1 << 26)`。必须大于 `0`。 |
-| `shard_id` / `shard_count` | 当前分片编号 / 总分片数，单实例填写 `0` / `1`；总数必须大于 `0`，编号从 `0` 开始且小于总数。 |
-| `token_endpoint` | 获取访问令牌的 HTTPS 地址，默认值见示例。 |
-| `api_base_url` | OpenAPI 的 HTTPS 基础地址，默认值见示例。 |
-| `trace_events` | 是否输出收到的事件类型；排查问题时可设为 `true`，默认 `false`。 |
-| `reconnect_minimum_seconds` / `reconnect_maximum_seconds` | 重连退避的最小 / 最大等待时间，单位秒，默认 `2` / `30`；最小值必须大于 `0`，最大值不得小于最小值。 |
-| `startup_timeout_seconds` | 启动连接超时时间，单位秒，默认 `30`，必须大于 `0`。 |
+| [**20261116**](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html#_20261116) | 用户资料、昵称、头像、群昵称，以及群统一标识 `union_group_openid`。 |
+| [**20261028**](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html#_20261028) | 群聊、私聊图文卡片。 |
+| [**20261026**](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html#_20261026) | 群聊文本和 Markdown @全体成员。 |
+| [**20261021**](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html#_20261021) | 图片素材管理，Markdown 里可用 `qqbot-media://` 引用图片。 |
+| [**20260903**](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html#_20260903) | 群成员列表、群成员信息、群成员批量移除。 |
+| [**20260810**](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html#_20260810) | 群禁言设置与查询、入群申请审批、入群自动审批策略与入群申请事件。 |
 
-消息上下文通过 `message_context_retention_minutes` 配置保留分钟数，默认 `60`，必须大于 `0`；修改后重启适配器生效。按进入缓存的时间计算有效期，数量上限通过 `message_context_max_messages` 配置，默认 `4096`，必须大于 `0`，同一适配器实例的群聊与私聊共用此上限，先触及时间或数量限制即淘汰。访问时检查过期，并每分钟清理一次（空闲时也清理），同时清理引用索引及过期祖先快照。此选项不改变回复序号、交互凭据及其他缓存的规则，重启后上下文仍会丢失。
+## 安装与使用
 
-## 媒体文件发送
+按 [ShiroBot 文档](https://docs.shiroka.org/adapter/) 部署，构建使用 .NET 11，宿主与 QQ Model 需一同更新。
 
-图片、视频、语音和文件消息段支持 HTTP(S) URL、本地绝对/相对路径、`file://` URI，以及 `base64:内容` / `base64://内容`。Base64 解码后通过本地文件分片上传，上传结束或失败后自动删除临时文件，解码后的大小须为 1 字节至 200 MB。
+在适配器的 `config.toml` 填入 `app_id` 和 `app_secret` 后重启。加载 `samples` 里的 RichDemo 后发送 `#rich` 可查看演示命令；`#capabilities` 会为每项能力给出对应测试按钮，`#groupinfo` 展示群资料、机器人状态与群黑名单的真实可用情况。
 
-Base64 使用原始字符串的内存切片，分块解码并写入临时文件，不复制完整编码字符串或创建完整解码字节数组。解码前检查大小，写入时再次限制大小；解码缓冲区大小固定。插件生成的原始 Base64 字符串仍会占用内存，大文件建议使用本地路径或文件流。
+## 贡献者
 
-已发送消息的回复缓存仅保留 Base64 媒体的类型、文件名和内容省略标记，不保留文件内容，不能用缓存中的该 URI 重新发送。适配器 API 错误会省略 Base64 内容；新版宿主也会在插件和适配器的日志入口统一省略此类内容。
+感谢每一位贡献代码和反馈问题的朋友。
 
-```csharp
-new FileSegment("base64:" + Convert.ToBase64String(bytes)) { FileName = "report.pdf" }
-```
-
-建议指定实际的 `FileName`。未指定时，图片、视频、语音和文件分别使用 `image.png`、`video.mp4`、`audio.silk` 和 `file.bin`；默认名称不会转换文件格式。
+<a href="https://github.com/ShirokaProject/Shirobot.Adapter.QQPlatform/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=ShirokaProject/Shirobot.Adapter.QQPlatform" alt="贡献者" />
+</a>
 
 ## 许可证
 
-[GPL3](./LICENSE)
-
-### 群成员事件与官方群管理
-
-`GROUP_MEMBER_ADD` / `GROUP_MEMBER_REMOVE` 映射为 SDK 的 `MemberJoinedEvent` / `MemberLeftEvent`，
-`Raw` 为 `QGroupMemberIncrease` / `QGroupMemberDecrease`，以 `member_openid` 作为群内用户 ID，另保留 `user_openid`。
-`GROUP_JOIN_REQUEST` 映射为 `PlatformEvent`，Kind 为 `QEventKinds.GroupJoinRequest`，
-Raw 为 `QGroupJoinRequest`，保留申请 ID、验证消息/问答、邀请人、风险提示及自动审批策略 ID。
-在适配器配置中开启 `subscribe_group_member_events = true`，或在 `intents` 中加入 `1 << 24`，
-即可订阅上述事件。开关默认关闭；入群申请事件需要机器人是群管理员。
-
-通过 `context.GetAdapterExtension<IQGroupApi>()` 获取官方群管理接口，支持：
-
-- 分页查询入群申请、同意或拒绝（可提供拒绝理由及同时拉黑）。
-- 查询群禁言状态、定时/周期禁言规则，以及单次最多 20 人的批量禁言/解除禁言。
-- 通过 `IQGroupApprovalStrategyApi` 探测自动审批策略的分页查询、创建、修改、删除、触发执行及白名单号码增删。
-
-群管理需要管理员身份及 QQ 平台开放的接口权限；不满足权限时平台错误会返回调用方。
-批量禁言先校验最多 20 项，再逐项设置状态，返回成功、失败、结果未知或未执行。零时长解除禁言；协议 add/update 由适配器处理。
-取消抛出的 `QBatchOperationCanceledException` 携带部分结果，不回滚已完成的操作。
-策略执行为异步任务，接口成功只代表已触发扫描。
-
-按钮支持 `GroupId`（仅回调按钮）、`QKeyboardModal` 二次确认和 `Red` / `BlueFilled` 样式。
-Markdown 可设置 `ForceVerifyImageResource = true`，图片转存失败时拒绝整条消息。
-通用消息发送支持文字加单个媒体；纯媒体仍不填充空格正文。
-类型化 `IQOfficialMessageApi.SendAsync` 的取消令牌覆盖最终发送请求。
-
-SDK 和 QQ Model ABI 已升级为 1.0.0.0，所有 ID 统一使用字符串；群管理与 Milky 共用 `IQGroupApi`。
-旧 `IQOfficialGroupApi` 已删除。引用 QQ Model 的插件和适配器均需重新编译并同步更新宿主。
-
-## 通用文件服务
-
-通过 `GetAdapterExtension<IFileService>()` 探测上传能力。支持群聊及私聊上传，返回未发布的媒体凭据（`IsPublished=false`）；需要发送文件时使用 `FileSegment`。现有官方媒体扩展继续保留。
-
-0.4.2 使用 SDK 1.0.1 / SDK ABI 1.2.0.0，要求宿主 1.0.0 或更高版本；QQ Model ABI 为 1.0.0.0。
-
-## 缓存与资源释放
-
-群名缓存最多保留 4096 项，成功查询有效期为 1 小时，失败查询为 5 分钟；过期数据在后续缓存访问时清理。发送消息引用索引的暂存缓存最多 4096 项、有效期 5 分钟，正常发送后立即取走，频道发送不保留。上传缓存最多 500 项，重复添加同一个键不会累积淘汰记录。每条消息最多保留 64 个引用索引别名。
-
-消息上下文按最近的过期时间触发扫描，尚无消息或祖先快照过期时，缓存访问不会全量扫描。停止适配器时，即使网关停止失败，也会释放上下文清理定时器、消息缓存和 HTTP 客户端。
+[Apache License 2.0](./LICENSE)

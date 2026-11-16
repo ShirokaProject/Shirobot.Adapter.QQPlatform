@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <ShiroBotPluginPackagingEnabled>true</ShiroBotPluginPackagingEnabled>
@@ -9,6 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="$(ShiroBotSourceRoot)/SDK/ShiroBot.SDK.csproj" Private="false" />
     <ProjectReference Include="$(ShiroBotSourceRoot)/Models/QQ/ShiroBot.Model.QQ.csproj" Private="false" />
+    <EmbeddedResource Include="Assets\*" />
   </ItemGroup>
   <Import Project="$(ShiroBotSourceRoot)/SDK/buildTransitive/ShiroBot.SDK.targets" />
 </Project>
