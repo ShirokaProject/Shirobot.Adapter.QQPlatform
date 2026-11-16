@@ -1,5 +1,12 @@
 <Project>
   <PropertyGroup>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <ShiroBotSourceRoot Condition="'$(ShiroBotSourceRoot)' == ''">$(MSBuildThisFileDirectory)../Shirobot</ShiroBotSourceRoot>
+
+    <!-- Keep build output outside the repository so Rider's solution view only shows source. -->
+    <QQPlatformBuildRoot Condition="'$(QQPlatformBuildRoot)' == ''">$(MSBuildThisFileDirectory)../.build/Shirobot.Adapter.QQPlatform</QQPlatformBuildRoot>
+    <BaseOutputPath>$(QQPlatformBuildRoot)/bin/$(MSBuildProjectName)/</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(QQPlatformBuildRoot)/obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+    <PublishDir Condition="'$(PublishDir)' == ''">$(QQPlatformBuildRoot)/publish/$(MSBuildProjectName)/</PublishDir>
   </PropertyGroup>
 </Project>

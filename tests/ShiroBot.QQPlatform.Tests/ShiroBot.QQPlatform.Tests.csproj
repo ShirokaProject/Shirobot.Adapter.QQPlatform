@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsTestProject>true</IsTestProject>
@@ -14,5 +14,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../ShiroBot.Adapter.QQPlatform.csproj" />
+    <ProjectReference Include="../../samples/ShiroBot.Plugin.QQPlatformRichDemo/ShiroBot.Plugin.QQPlatformRichDemo.csproj" />
   </ItemGroup>
 </Project>

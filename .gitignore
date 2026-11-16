@@ -6,3 +6,8 @@ artifacts/
 .idea/
 config.toml
 *.user
+.dotnet/
+*.binlog
+.build/
+**/dist/
+**/publish/

@@ -8,6 +8,8 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      SHIROBOT_REF: ${{ vars.SHIROBOT_REF || 'master' }}
     steps:
       - name: Checkout adapter
         uses: actions/checkout@v4
@@ -17,13 +19,13 @@ jobs:
           mkdir -p ../Shirobot
           git -C ../Shirobot init
           git -C ../Shirobot remote add origin https://github.com/ShirokaProject/ShiroBot.git
-          git -C ../Shirobot fetch --depth=1 origin master
+          git -C ../Shirobot fetch --depth=1 origin "$SHIROBOT_REF"
           git -C ../Shirobot checkout --detach FETCH_HEAD
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 11.0.x
 
       - name: Build
         run: dotnet build ShiroBot.Adapter.QQPlatform.sln -c Release
