@@ -5,71 +5,84 @@ using ShiroBot.SDK.Core;
 using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
 
-[assembly: RequiresShiroBotPackage("shirobot.model.qq", MinimumVersion = "0.9.2")]
+[assembly: RequiresShiroBotPackage("shirobot.model.qq", MinimumVersion = "1.0.0")]
 
 namespace ShiroBot.Plugin.QQPlatformRichDemo;
 
-[BotPlugin("qqplatform.rich-demo", Name = "QQPlatform Rich Demo", Version = "1.0.0",
-    Description = "QQ 官方机器人富消息能力示例", SharedAssemblies = "ShiroBot.Model.QQ")]
-public sealed class RichDemoPlugin : PluginBase
+[BotPlugin("qqplatform.rich-demo", Name = "QQPlatform Rich Demo", Version = "2.1.0",
+    Description = "QQ 官方机器人能力演示", SharedAssemblies = "ShiroBot.Model.QQ")]
+public sealed partial class RichDemoPlugin : PluginBase<RichDemoConfig>
 {
-    private const string Article = """
-        # ShiroBot 富消息演示
-
-        这是通过上游 IQOfficialMessageApi 发送的 Markdown 消息。
-
-        ## 可测试的能力
-
-        1. `#imagetest`：发送配置中的远程图片。
-        2. `#recalltest`：发送消息，三秒后撤回。
-        3. `#actiontest`：查看文本命令菜单。
-
-        菜单支持原生按钮回调；输入状态和流式消息可在私聊中测试。
+    private const string HelpMenu = """
+        #about 头像、名称、群昵称与 OpenID
+        #userinfo 私聊用户资料
+        #groupinfo 群资料、统一标识、机器人状态、黑名单
+        #mdtest Markdown 与按钮
+        #cardtest 官方图文卡片
+        #genericcardtest SDK 图文卡片
+        #imagetest 图片
+        #mediaimage 图片文件
+        #mediaaudio 语音 mp3
+        #mediavideo 视频 mp4
+        #mediafile PDF 文件
+        #mediatest 依次发送图片、语音、视频、文件
+        #replytext 文本回复
+        #replyimage 图片回复
+        #replymd 富媒体回复
+        #replyaudio 语音回复
+        #replyvideo 视频回复
+        #replyfile 文件回复
+        #materialtest 图片素材
+        #alltest @全体
+        #typingtest 输入状态
+        #streamtest 流式消息
+        #recalltest 撤回
+        #capabilities 能力探测
         """;
 
-    private RichDemoConfig _config = new();
-    private IDisposable? _configWatcher;
+    private CancellationToken Stopping => Context.Lifetime.Stopping;
 
     protected override void ConfigureRoutes()
     {
+        Map("rich", SendMenuAsync);
+        Map("about", SendAboutAsync);
+        Map("me", SendAboutAsync);
+        Map("whoami", SendAboutAsync);
+        Map("userinfo", SendUserInfoAsync);
+        Map("groupinfo", SendGroupInfoAsync);
+        Map("mdtest", SendGenericMarkdownAsync);
+        Map("genericmdtest", SendGenericMarkdownAsync);
+        Map("actiontest", SendGenericMarkdownAsync);
+        Map("replytext", message => ReplyAsync(message, "文本回复测试：引用刚收到的那条消息。"));
+        Map("replyimage", SendImageAssetAsync);
+        Map("replymd", SendGenericMarkdownAsync);
+        Map("replyaudio", message => SendMediaCommandAsync(message, "demo.mp3", quote: true));
+        Map("replyvideo", message => SendMediaCommandAsync(message, "demo.mp4", quote: true));
+        Map("replyfile", message => SendMediaCommandAsync(message, "demo.pdf", quote: true));
+        Map("cardtest", message => SendCardDemoAsync(message, generic: false));
+        Map("genericcardtest", message => SendCardDemoAsync(message, generic: true));
         Map("imagetest", SendImageAsync);
-        Map("mdtest", message => SendPageAsync(message.Channel, message.Sender.Id,
-            new QOfficialMessageReply { MessageId = message.MessageId }, "article"));
-        Map("recalltest", SendAndRecallAsync);
+        Map("mediaimage", SendImageAssetAsync);
+        Map("mediaaudio", message => SendMediaCommandAsync(message, "demo.mp3"));
+        Map("mediavideo", message => SendMediaCommandAsync(message, "demo.mp4"));
+        Map("mediafile", message => SendMediaCommandAsync(message, "demo.pdf"));
+        Map("mediatest", SendAllMediaAsync);
+        Map("materialtest", SendMaterialDemoAsync);
+        Map("capabilities", SendCapabilitiesAsync);
+        Map("alltest", message => SendEveryoneAsync(message, markdown: false));
+        Map("allmdtest", message => SendEveryoneAsync(message, markdown: true));
         Map("typingtest", SendTypingDemoAsync);
         Map("streamtest", SendStreamDemoAsync);
-        Map("whoami", SendIdentityAsync);
-        Map("actiontest", message => SendPageAsync(message.Channel, message.Sender.Id,
-            new QOfficialMessageReply { MessageId = message.MessageId }, "main"));
-        Map("action/features", message => SendPageAsync(message.Channel, message.Sender.Id,
-            new QOfficialMessageReply { MessageId = message.MessageId }, "features"));
-        Map("action/tools", message => SendPageAsync(message.Channel, message.Sender.Id,
-            new QOfficialMessageReply { MessageId = message.MessageId }, "tools"));
-        Map("action/status", message => SendPageAsync(message.Channel, message.Sender.Id,
-            new QOfficialMessageReply { MessageId = message.MessageId }, "status"));
-        Map("action/help", message => SendPageAsync(message.Channel, message.Sender.Id,
-            new QOfficialMessageReply { MessageId = message.MessageId }, "help"));
-        Map("rich", message => ReplyAsync(message, HelpMenu));
-        GroupCommands.MapWhen(message => !message.Sender.IsBot
-                && message.SelfId is { Length: > 0 } selfId
-                && message.HasMention(selfId),
-            HandleMentionAsync);
-        Events.MapPlatform(QEventKinds.OfficialButtonInteraction, HandleInteractionAsync);
-    }
+        Map("recalltest", SendAndRecallAsync);
 
-    protected override Task LoadAsync()
-    {
-        _config = Context.Config.Load<RichDemoConfig>();
-        Context.Config.Save(_config);
-        _configWatcher = Context.Config.Watch<RichDemoConfig>(updated => _config = updated);
-        return Task.CompletedTask;
-    }
+        MapArgument("materiallist", ListMaterialsAsync);
+        MapArgument("materialdelete", DeleteMaterialAsync);
 
-    protected override Task OnUnloadAsync()
-    {
-        _configWatcher?.Dispose();
-        _configWatcher = null;
-        return Task.CompletedTask;
+        Events.MapWhen<InteractionEvent>(
+            interaction => interaction.Platform == "qq-official"
+                && interaction.Kind == QEventKinds.OfficialButtonInteraction
+                && interaction.Data?.StartsWith("rich:", StringComparison.Ordinal) == true,
+            "RichDemo 菜单按钮", HandleInteractionAsync);
     }
 
     private void Map(string command, Func<MessageEvent, Task> handler)
@@ -78,257 +91,217 @@ public sealed class RichDemoPlugin : PluginBase
         AllCommands.MapExact($"/{command}", message => HandleAsync(message, handler));
     }
 
-    private static Task HandleAsync(MessageEvent message, Func<MessageEvent, Task> handler) =>
-        message.Sender.IsBot ? Task.CompletedTask : handler(message);
+    private void MapArgument(string command, Func<MessageEvent, string, Task> handler)
+    {
+        foreach (var prefix in new[] { "#", "/" })
+        {
+            var route = $"{prefix}{command} ";
+            AllCommands.MapPrefix(route,
+                message => HandleAsync(message, incoming => handler(incoming, Argument(incoming, route))));
+        }
+    }
+
+    private static string Argument(MessageEvent message, string route)
+    {
+        var text = message.GetPlainText().Trim();
+        return text.StartsWith(route, StringComparison.Ordinal) ? text[route.Length..].Trim() : string.Empty;
+    }
+
+    private async Task HandleAsync(MessageEvent message, Func<MessageEvent, Task> handler)
+    {
+        if (message.Sender.IsBot || message.Platform != "qq-official") return;
+        try
+        {
+            await handler(message).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (Stopping.IsCancellationRequested)
+        {
+        }
+        catch (QLimitExceededException ex)
+        {
+            await ReplyAsync(message, $"{ex.Operation}: 今日次数已用完。").ConfigureAwait(false);
+        }
+        catch (QPermissionDeniedException ex)
+        {
+            await ReplyAsync(message, $"{ex.Operation}: 当前机器人未获权限。").ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            BotLog.Warning($"RichDemo 演示失败（{ex.GetType().Name}），未自动重试。");
+            await ReplyAsync(message, "演示失败，请检查配置及宿主日志。不会自动重发，以免重复发送。")
+                .ConfigureAwait(false);
+        }
+    }
+
+    private Task ReplyAsync(MessageEvent message, OutgoingMessage content) =>
+        Context.Message.ReplyAsync(message, WithReply(message, content), Stopping);
 
     private Task ReplyAsync(MessageEvent message, string text) =>
-        Context.Message.ReplyAsync(message, text);
+        ReplyAsync(message, new OutgoingMessage { Segments = [new TextSegment(text)] });
 
-    private Task SendIdentityAsync(MessageEvent message)
+    private static OutgoingMessage WithReply(MessageEvent message, OutgoingMessage content) =>
+        content with { ReplyTo = message.Reference };
+
+    private static OutgoingMessage MenuMessage() => new()
     {
-        if (message.Platform != "qq-official") return Task.CompletedTask;
+        Segments =
+        [
+            new MarkdownSegment("## RichDemo\n\n每个命令演示一项能力，支持 `#` 或 `/` 前缀。" +
+                "群内可测试真实群资料与内邀接口状态。")
+        ],
+        Buttons = new MessageButtonLayout(
+        [
+            new MessageButtonRow(
+            [
+                new MessageButton("about", "关于我", new CallbackAction("rich:about")),
+                new MessageButton("md", "Markdown", new CallbackAction("rich:md")),
+                new MessageButton("caps", "能力", new CallbackAction("rich:caps"))
+            ]),
+            new MessageButtonRow(
+            [
+                new MessageButton("group", "群资料", new CallbackAction("rich:group")),
+                new MessageButton("image", "图片", new CallbackAction("rich:image")),
+                new MessageButton("help", "命令", new CallbackAction("rich:help"))
+            ]),
+            new MessageButtonRow(
+            [
+                new MessageButton("replytext", "文本回复", new CallbackAction("rich:reply:text")),
+                new MessageButton("replyimage", "图片回复", new CallbackAction("rich:reply:image")),
+                new MessageButton("replymd", "富媒体回复", new CallbackAction("rich:reply:md"))
+            ]),
+            new MessageButtonRow(
+            [
+                new MessageButton("mediaimage", "图片", new CallbackAction("rich:test:image")),
+                new MessageButton("mediaaudio", "语音", new CallbackAction("rich:test:audio")),
+                new MessageButton("mediavideo", "视频", new CallbackAction("rich:test:video")),
+                new MessageButton("mediafile", "文件", new CallbackAction("rich:test:filemedia"))
+            ]),
+            new MessageButtonRow(
+            [
+                new MessageButton("replyaudio", "语音回复", new CallbackAction("rich:reply:audio")),
+                new MessageButton("replyvideo", "视频回复", new CallbackAction("rich:reply:video")),
+                new MessageButton("replyfile", "文件回复", new CallbackAction("rich:reply:file"))
+            ])
+        ])
+    };
 
-        var scene = message.IsDirect ? "私聊" : "群聊";
-        var identityKind = message.IsDirect ? "user_openid" : "member_openid";
-        var isAdmin = Context.IsAdmin(message.Sender.Id) ? "是" : "否";
-        return ReplyAsync(message,
-            $"{scene} {identityKind}: {message.Sender.Id}\nShiroBot 管理权限: {isAdmin}");
-    }
+    private Task SendMenuAsync(MessageEvent message) => ReplyAsync(message, MenuMessage());
 
-    private Task HandleMentionAsync(MessageEvent message) =>
-        Context.Message.QuoteReplyAsync(message,
-            new MentionSegment(message.Sender.Id)
+    private async Task HandleInteractionAsync(InteractionEvent interaction)
+    {
+        try
+        {
+            var channel = interaction.Channel ?? throw new InvalidOperationException("Interaction has no channel.");
+            OutgoingMessage reply;
+            switch (interaction.Data)
             {
-                DisplayName = message.Member?.Nick ?? message.Sender.Name
-            },
-            new TextSegment("收到你的 @ 了，这是对原消息的引用回复。"));
-
-    private async Task SendImageAsync(MessageEvent message)
-    {
-        var imageUrl = _config.ImageUrl.Trim();
-        if (!Uri.TryCreate(imageUrl, UriKind.Absolute, out var uri)
-            || uri.Scheme is not ("http" or "https"))
-        {
-            await ReplyAsync(message, "请先在插件 config.toml 中设置公网 HTTP(S) 图片地址 image_url。")
-                .ConfigureAwait(false);
-            return;
+                case "rich:about":
+                    reply = ProfileMessage(interaction.User, channel, null, "按钮交互", null,
+                        interaction.InstanceId);
+                    break;
+                case "rich:md":
+                    reply = CreateMarkdownDemo();
+                    break;
+                case "rich:caps":
+                    reply = CapabilitiesMessage(channel, interaction.InstanceId);
+                    break;
+                case "rich:group":
+                    reply = new OutgoingMessage
+                    {
+                        Segments = [new TextSegment(await GroupInfoTextAsync(channel).ConfigureAwait(false))]
+                    };
+                    break;
+                case "rich:test:official":
+                    reply = await TestOfficialMessageAsync(channel, EventReply(interaction)).ConfigureAwait(false);
+                    break;
+                case "rich:test:media":
+                    reply = await TestMediaAsync(channel, EventReply(interaction)).ConfigureAwait(false);
+                    break;
+                case "rich:test:material":
+                    reply = await TestMaterialAsync(channel, interaction.InstanceId, interaction.User,
+                        EventReply(interaction)).ConfigureAwait(false);
+                    break;
+                case "rich:test:user":
+                    reply = await TestUserAsync(channel, interaction.User).ConfigureAwait(false);
+                    break;
+                case "rich:test:file":
+                    reply = await TestFileUploadAsync(channel).ConfigureAwait(false);
+                    break;
+                case "rich:test:image":
+                    reply = await TestMediaAsync(channel, EventReply(interaction)).ConfigureAwait(false);
+                    break;
+                case "rich:test:audio":
+                    reply = await TestMediaAssetAsync(channel, EventReply(interaction),
+                        QOfficialMediaType.Audio, "demo.mp3").ConfigureAwait(false);
+                    break;
+                case "rich:test:video":
+                    reply = await TestMediaAssetAsync(channel, EventReply(interaction),
+                        QOfficialMediaType.Video, "demo.mp4").ConfigureAwait(false);
+                    break;
+                case "rich:test:filemedia":
+                    reply = await TestMediaAssetAsync(channel, EventReply(interaction),
+                        QOfficialMediaType.File, "demo.pdf").ConfigureAwait(false);
+                    break;
+                case "rich:test:stream":
+                    reply = await TestStreamAsync(channel, interaction.MessageId).ConfigureAwait(false);
+                    break;
+                case "rich:test:group":
+                    reply = await TestGroupAsync(channel).ConfigureAwait(false);
+                    break;
+                case "rich:test:caps":
+                    reply = CapabilitiesMessage(channel, interaction.InstanceId);
+                    break;
+                case "rich:image":
+                    reply = ImageMessage(Settings.ImageUrl);
+                    break;
+                case "rich:reply:text":
+                    reply = new OutgoingMessage { Segments = [new TextSegment("文本回复测试：引用刚收到的那条消息。")] };
+                    break;
+                case "rich:reply:image":
+                    reply = ImageMessage(Settings.ImageUrl);
+                    break;
+                case "rich:reply:md":
+                    reply = CreateMarkdownDemo();
+                    break;
+                case "rich:reply:audio":
+                    reply = await TestMediaAssetAsync(channel, EventReply(interaction),
+                        QOfficialMediaType.Audio, "demo.mp3").ConfigureAwait(false);
+                    break;
+                case "rich:reply:video":
+                    reply = await TestMediaAssetAsync(channel, EventReply(interaction),
+                        QOfficialMediaType.Video, "demo.mp4").ConfigureAwait(false);
+                    break;
+                case "rich:reply:file":
+                    reply = await TestMediaAssetAsync(channel, EventReply(interaction),
+                        QOfficialMediaType.File, "demo.pdf").ConfigureAwait(false);
+                    break;
+                default:
+                    reply = new OutgoingMessage { Segments = [new MarkdownSegment($"**命令**\n\n{HelpMenu}")] };
+                    break;
+            }
+            await Context.Message.ReplyAsync(interaction, reply, Stopping).ConfigureAwait(false);
         }
-
-        await Context.Message.QuoteReplyAsync(message, new ImageSegment(uri.AbsoluteUri))
-            .ConfigureAwait(false);
-    }
-
-    private Task HandleInteractionAsync(PlatformEvent evt)
-    {
-        if (evt.Raw is not QOfficialButtonInteraction interaction || evt.Channel is null)
-            return Task.CompletedTask;
-        if (!interaction.ButtonData.StartsWith("rich:", StringComparison.Ordinal)) return Task.CompletedTask;
-        var page = interaction.ButtonData["rich:".Length..];
-        if (page is not ("main" or "features" or "tools" or "status" or "help" or "article"))
-            return Task.CompletedTask;
-        if (string.IsNullOrWhiteSpace(interaction.EventId))
+        catch (OperationCanceledException) when (Stopping.IsCancellationRequested)
         {
-            BotLog.Warning("RichDemo 按钮事件缺少 Gateway 事件 ID，无法发送被动回复。");
-            return Task.CompletedTask;
         }
-        return SendPageAsync(evt.Channel, interaction.UserId,
-            new QOfficialMessageReply { EventId = interaction.EventId }, page);
-    }
-
-    private async Task SendPageAsync(Channel channel, string userId, QOfficialMessageReply? reply, string page)
-    {
-        var (content, keyboard) = CreatePage(channel, userId, page);
-        var target = channel.Type switch
+        catch (QLimitExceededException ex)
         {
-            ChannelType.Group => new QOfficialMessageTarget(QOfficialMessageScene.Group, channel.Id),
-            ChannelType.Direct => new QOfficialMessageTarget(QOfficialMessageScene.Direct, channel.Id),
-            _ => null
-        };
-        var official = Context.GetAdapterExtension<IQOfficialMessageApi>();
-        var markdown = new QCustomMarkdown(content);
-        if (target is null || official?.CanSendMarkdown(target, markdown, keyboard) != true)
-        {
-            if (target is not null)
-                await SendPlainTextPageAsync(official, target, reply, page, content).ConfigureAwait(false);
-            return;
+            await Context.Message.ReplyAsync(interaction,
+                new OutgoingMessage { Segments = [new TextSegment($"{ex.Operation}: 今日次数已用完。")] },
+                Stopping).ConfigureAwait(false);
         }
-
-        try
+        catch (QPermissionDeniedException ex)
         {
-            await official.SendMarkdownAsync(target, markdown, keyboard, reply)
-                .ConfigureAwait(false);
+            await Context.Message.ReplyAsync(interaction,
+                new OutgoingMessage { Segments = [new TextSegment($"{ex.Operation}: 当前机器人未获权限。")] },
+                Stopping).ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            BotLog.Warning($"RichDemo 富消息发送失败，改用普通文本：{ex.Message}");
-            await SendPlainTextPageAsync(official, target, reply, page, content).ConfigureAwait(false);
-        }
-    }
-
-    private async Task SendPlainTextPageAsync(IQOfficialMessageApi? official,
-        QOfficialMessageTarget target, QOfficialMessageReply? reply, string page, string content)
-    {
-        if (official is null || reply is null) return;
-        try
-        {
-            await official.SendTextAsync(target, PlainTextPage(page, content), reply).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            BotLog.Warning($"RichDemo 普通文本回复失败：{ex.Message}");
-        }
-    }
-
-    private static (string Content, QInlineKeyboard Keyboard) CreatePage(Channel channel, string userId, string page) => page switch
-    {
-        "main" => ("# ShiroBot 交互控制中心\n\n选择下面的功能或工具。",
-            Keyboard([Callback("features", "功能中心", "features"), Callback("tools", "工具菜单", "tools")],
-                [Callback("article", "阅读文章", "article"), Link("docs", ".NET 文档", "https://learn.microsoft.com/dotnet/")])),
-        "features" => ("## 功能中心\n\n查看运行状态与使用指南。",
-            Keyboard([Callback("status", "运行状态", "status", users: [userId]),
-                    Callback("help", "使用指南", "help")],
-                [Callback("back-main", "返回首页", "main", QKeyboardButtonStyle.Gray)])),
-        "tools" => ("## 工具菜单\n\nMarkdown、图片和撤回演示。",
-            Keyboard([Callback("article", "Markdown", "article"), Command("images", "图片测试", "#imagetest")],
-                [Command("recall", "撤回测试", "#recalltest"), Callback("back-main", "返回首页", "main", QKeyboardButtonStyle.Gray)])),
-        "status" => ($"## 运行状态\n\n平台：{channel.Type}\n会话：{channel.Name ?? channel.Id}\n交互回调：可用",
-            Keyboard([Callback("back-features", "返回功能", "features", QKeyboardButtonStyle.Gray),
-                Callback("back-main", "返回首页", "main", QKeyboardButtonStyle.Gray)])),
-        "help" => ("## 使用指南\n\n点击按钮进入下一页，也可以发送 `#actiontest`、`#mdtest`、`#imagetest`、`#recalltest`。",
-            Keyboard([Callback("back-features", "返回功能", "features", QKeyboardButtonStyle.Gray),
-                Callback("back-main", "返回首页", "main", QKeyboardButtonStyle.Gray)])),
-        "article" => (Article,
-            Keyboard([Callback("back-main", "返回首页", "main", QKeyboardButtonStyle.Gray),
-                Link("docs", ".NET 文档", "https://learn.microsoft.com/dotnet/")])),
-        _ => throw new ArgumentOutOfRangeException(nameof(page))
-    };
-
-    private static QInlineKeyboard Keyboard(params QKeyboardButton[][] rows) =>
-        new(rows.Select(row => new QKeyboardRow(row)).ToArray());
-
-    private static QKeyboardButton Callback(string id, string label, string page,
-        QKeyboardButtonStyle style = QKeyboardButtonStyle.Blue, IReadOnlyList<string>? users = null) =>
-        Button(id, label, QKeyboardActionType.Callback, $"rich:{page}", style, users);
-
-    private static QKeyboardButton Command(string id, string label, string command) =>
-        Button(id, label, QKeyboardActionType.Command, command, QKeyboardButtonStyle.Blue, enter: true);
-
-    private static QKeyboardButton Link(string id, string label, string url) =>
-        Button(id, label, QKeyboardActionType.Jump, url, QKeyboardButtonStyle.Gray);
-
-    private static QKeyboardButton Button(string id, string label, QKeyboardActionType type, string data,
-        QKeyboardButtonStyle style, IReadOnlyList<string>? users = null, bool? enter = null) => new()
-    {
-        Id = id,
-        RenderData = new QKeyboardRenderData(label, label, style),
-        Action = new QKeyboardAction
-        {
-            Type = type,
-            Data = data,
-            Permission = new QKeyboardPermission
-            {
-                Type = users is null ? QKeyboardPermissionType.Everyone : QKeyboardPermissionType.SpecifiedUsers,
-                SpecifyUserIds = users
-            },
-            UnsupportTips = "请更新 QQ 客户端",
-            Enter = enter
-        }
-    };
-
-    private static string PlainTextPage(string page, string content) => page switch
-    {
-        "main" => MainMenu,
-        "features" => FeaturesMenu,
-        "tools" => ToolsMenu,
-        "help" => HelpMenu,
-        "article" => Article,
-        _ => content
-    };
-
-    private async Task SendAndRecallAsync(MessageEvent message)
-    {
-        var sent = await Context.Message.QuoteReplyAsync(message, "这条消息将在 3 秒后撤回。")
-            .ConfigureAwait(false);
-        await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-        try
-        {
-            await Context.Message.DeleteMessageAsync(message.Channel, sent.MessageId).ConfigureAwait(false);
-            BotLog.Info($"已撤回演示消息 {sent.MessageId}");
-        }
-        catch (Exception ex)
-        {
-            BotLog.Warning($"撤回演示失败：{ex.Message}");
-            await ReplyAsync(message, "撤回失败，请查看 CLI 日志。").ConfigureAwait(false);
+            BotLog.Warning($"RichDemo 按钮回复失败（{ex.GetType().Name}），未重复确认或重发。");
         }
     }
 
-    private async Task SendTypingDemoAsync(MessageEvent message)
-    {
-        if (message.Channel.Type != ChannelType.Direct)
-        {
-            await ReplyAsync(message, "输入状态仅支持 QQ 私聊，请在私聊中发送 #typingtest。").ConfigureAwait(false);
-            return;
-        }
-        var qq = Context.GetAdapterExtension<IQOfficialDirectMessageApi>();
-        if (qq is null)
-        {
-            await ReplyAsync(message, "当前适配器不支持 QQ 官方私聊输入状态。").ConfigureAwait(false);
-            return;
-        }
-        try
-        {
-            await qq.SendTypingAsync(
-                new QOfficialMessageTarget(QOfficialMessageScene.Direct, message.Channel.Id),
-                new QOfficialMessageReply { MessageId = message.MessageId },
-                TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-            await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-            await Context.Message.QuoteReplyAsync(message, "输入状态演示结束。").ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            BotLog.Warning($"输入状态演示失败：{ex.Message}");
-            await ReplyAsync(message, "输入状态发送失败，请查看 CLI 日志。").ConfigureAwait(false);
-        }
-    }
-
-    private async Task SendStreamDemoAsync(MessageEvent message)
-    {
-        if (message.Channel.Type != ChannelType.Direct)
-        {
-            await ReplyAsync(message, "流式消息仅支持 QQ 私聊，请在私聊中发送 #streamtest。").ConfigureAwait(false);
-            return;
-        }
-        var qq = Context.GetAdapterExtension<IQOfficialDirectMessageApi>();
-        if (qq is null)
-        {
-            await ReplyAsync(message, "当前适配器不支持 QQ 官方私聊流式消息。").ConfigureAwait(false);
-            return;
-        }
-        try
-        {
-            await using var stream = qq.BeginStream(
-                new QOfficialMessageTarget(QOfficialMessageScene.Direct, message.Channel.Id),
-                new QOfficialMessageReply { MessageId = message.MessageId });
-            await stream.AppendAsync("QQPlatform").ConfigureAwait(false);
-            await stream.AppendAsync("QQPlatform 流式").ConfigureAwait(false);
-            await stream.AppendAsync("QQPlatform 流式消息演示完成。 ").ConfigureAwait(false);
-            await stream.CompleteAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            BotLog.Warning($"流式消息演示失败：{ex.Message}");
-            await ReplyAsync(message, "流式消息发送失败，请查看 CLI 日志。").ConfigureAwait(false);
-        }
-    }
-
-    private const string MainMenu = "功能中心：#action/features\n工具菜单：#action/tools\n使用指南：#action/help\n文章：#mdtest";
-    private const string FeaturesMenu = "功能中心\n运行状态：#action/status\n使用指南：#action/help\n返回首页：#actiontest";
-    private const string ToolsMenu = "工具菜单\nMarkdown：#mdtest\n图片：#imagetest\n撤回：#recalltest\n输入状态：#typingtest\n流式消息：#streamtest\n身份：#whoami\n返回首页：#actiontest";
-    private const string HelpMenu = "RichDemo 命令：#actiontest、#mdtest、#imagetest、#recalltest、#typingtest、#streamtest、#whoami。支持 / 前缀。Markdown 菜单附带原生按钮；QQ 平台未开放权限时回退为文本命令。";
-}
-
-public sealed class RichDemoConfig
-{
-    [ConfigField("imagetest 使用的公网 HTTP(S) 图片地址", Label = "测试图片 URL")]
-    public string ImageUrl { get; set; } = "";
+    private static QOfficialMessageReply EventReply(InteractionEvent interaction) =>
+        new() { EventId = interaction.InteractionId };
 }
