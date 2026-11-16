@@ -32,6 +32,9 @@ internal sealed record QQUser
 {
     [JsonPropertyName("id")] public string? Id { get; init; }
     [JsonPropertyName("username")] public string? Username { get; init; }
+    [JsonPropertyName("avatar")] public string? Avatar { get; init; }
+    [JsonPropertyName("member_nickname")] public string? MemberNickname { get; init; }
+    [JsonPropertyName("allow_proactive_msg")] public bool AllowProactiveMessage { get; init; }
     [JsonPropertyName("user_openid")] public string? UserOpenId { get; init; }
     [JsonPropertyName("member_openid")] public string? MemberOpenId { get; init; }
     [JsonPropertyName("member_role")] public string? MemberRole { get; init; }
@@ -58,6 +61,7 @@ internal sealed record QQIncomingMessage
     [JsonPropertyName("author")] public QQUser? Author { get; init; }
     [JsonPropertyName("content")] public string? Content { get; init; }
     [JsonPropertyName("group_openid")] public string? GroupOpenId { get; init; }
+    [JsonPropertyName("union_group_openid")] public string? UnionGroupOpenId { get; init; }
     [JsonPropertyName("timestamp")] public string? Timestamp { get; init; }
     [JsonPropertyName("attachments")] public IReadOnlyList<QQAttachment>? Attachments { get; init; }
     [JsonPropertyName("mentions")] public IReadOnlyList<QQUser>? Mentions { get; init; }
@@ -78,9 +82,38 @@ internal sealed record QQMessageReference([property: JsonPropertyName("message_i
 internal sealed record QQGroupInfo
 {
     [JsonPropertyName("group_openid")] public string? GroupOpenId { get; init; }
+    [JsonPropertyName("union_group_openid")] public string? UnionGroupOpenId { get; init; }
     [JsonPropertyName("group_name")] public string? GroupName { get; init; }
+    [JsonPropertyName("group_finger_memo")] public string? FingerMemo { get; init; }
+    [JsonPropertyName("group_class_text")] public string? ClassText { get; init; }
+    [JsonPropertyName("group_tags")] public IReadOnlyList<string>? Tags { get; init; }
     [JsonPropertyName("group_member_num")] public int? MemberCount { get; init; }
 }
+
+internal sealed record QQGroupBlacklistPage(
+    [property: JsonPropertyName("users")] IReadOnlyList<QQGroupBlacklistUser>? Users,
+    [property: JsonPropertyName("next_cursor")] string? NextCursor);
+
+internal sealed record QQGroupBlacklistUser(
+    [property: JsonPropertyName("member_openid")] string? MemberOpenId,
+    [property: JsonPropertyName("union_openid")] string? UnionOpenId,
+    [property: JsonPropertyName("username")] string? Username,
+    [property: JsonPropertyName("banned_at")] string? BannedAt,
+    [property: JsonPropertyName("bot")] bool Bot);
+
+internal sealed record QQGroupBlacklistRequest(
+    [property: JsonPropertyName("op")] string Operation,
+    [property: JsonPropertyName("member_openids")] IReadOnlyList<string> MemberOpenIds);
+
+internal sealed record QQGroupBlacklistResponse(
+    [property: JsonPropertyName("fail_openids")] IReadOnlyList<string>? FailOpenIds);
+
+internal sealed record QQGroupBotState(
+    [property: JsonPropertyName("member_openid")] string? MemberOpenId,
+    [property: JsonPropertyName("joined_at")] string? JoinedAt,
+    [property: JsonPropertyName("allow_proactive_msg")] bool AllowProactiveMessage,
+    [property: JsonPropertyName("recv_msg_setting")] string? ReceiveSetting,
+    [property: JsonPropertyName("member_role")] string? MemberRole);
 
 internal sealed record QQGroupMemberPage
 {
@@ -139,12 +172,23 @@ internal sealed record QQSendRequest
     [JsonPropertyName("keyboard"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQKeyboardWire? Keyboard { get; init; }
     [JsonPropertyName("ark"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQArk? Ark { get; init; }
     [JsonPropertyName("embed"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQEmbed? Embed { get; init; }
+    [JsonPropertyName("card"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQCard? Card { get; init; }
     [JsonPropertyName("input_notify"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public QQInputNotify? InputNotify { get; init; }
 }
 
 internal sealed record QQInputNotify(
     [property: JsonPropertyName("input_type")] int InputType,
     [property: JsonPropertyName("input_second")] int DurationSeconds);
+
+internal sealed record QQCard(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("content")] QQCardContent Content);
+
+internal sealed record QQCardContent(
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("description")] string Description,
+    [property: JsonPropertyName("url")] string Url,
+    [property: JsonPropertyName("pic_url")] string PictureUrl);
 
 internal sealed record QQStreamRequest
 {

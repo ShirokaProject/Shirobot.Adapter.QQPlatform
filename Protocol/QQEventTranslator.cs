@@ -3,11 +3,20 @@ using ShiroBot.Adapter.QQPlatform.Wire;
 using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Models;
 
+using ShiroBot.Adapter.QQPlatform.Protocol.Mapping;
 namespace ShiroBot.Adapter.QQPlatform.Protocol;
 
 internal static class QQEventTranslator
 {
     internal const string Platform = "qq-official";
+
+    /// <summary>Returns the interaction ID that can be acknowledged before full event translation.</summary>
+    internal static string? InteractionId(GatewayPayload payload)
+    {
+        if (payload.EventType != "INTERACTION_CREATE") return null;
+        var data = payload.Data.Deserialize<QQInteractionData>(QQJson.Options);
+        return data is { Type: 11, Id: { Length: > 0 } id } ? id : null;
+    }
 
     public static BotEvent? Translate(GatewayPayload payload, string? selfId, string? selfName = null)
     {
@@ -35,6 +44,7 @@ internal static class QQEventTranslator
                     Raw = new QGroupMemberIncrease
                     {
                         GroupId = groupId, UserId = memberId, GlobalUserId = QQOfficialGroupMapper.Text(raw, "user_openid"),
+                        UnionGroupOpenId = QQOfficialGroupMapper.Text(raw, "union_group_openid"),
                         EventId = payload.Id, Time = QQOfficialGroupMapper.Time(raw), SelfId = selfId
                     }
                 }
@@ -44,6 +54,7 @@ internal static class QQEventTranslator
                     Raw = new QGroupMemberDecrease
                     {
                         GroupId = groupId, UserId = memberId, GlobalUserId = QQOfficialGroupMapper.Text(raw, "user_openid"),
+                        UnionGroupOpenId = QQOfficialGroupMapper.Text(raw, "union_group_openid"),
                         EventId = payload.Id, Time = QQOfficialGroupMapper.Time(raw), SelfId = selfId
                     }
                 };
@@ -102,7 +113,8 @@ internal static class QQEventTranslator
             if (!string.IsNullOrWhiteSpace(referencedMessageId))
                 segments.Add(new QuoteSegment(referencedMessageId));
             var mentionNames = (message.Mentions ?? [])
-                .Select(mention => (Id: mention.MemberOpenId ?? mention.Id, mention.Username))
+                .Select(mention => (Id: mention.MemberOpenId ?? mention.Id,
+                    Username: string.IsNullOrWhiteSpace(mention.MemberNickname) ? mention.Username : mention.MemberNickname))
                 .Where(mention => !string.IsNullOrWhiteSpace(mention.Id) && !string.IsNullOrWhiteSpace(mention.Username))
                 .GroupBy(mention => mention.Id!, StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => group.First().Username!, StringComparer.Ordinal);
@@ -142,7 +154,8 @@ internal static class QQEventTranslator
             }
             foreach (var attachment in message.Attachments ?? [])
                 if (QQAttachmentMapper.ToSegment(attachment) is { } resource) segments.Add(resource);
-            var sender = new User(senderId) { Name = message.Author?.Username, IsBot = message.Author?.Bot ?? false };
+            var sender = new User(senderId) { Name = message.Author?.Username, AvatarUrl = message.Author?.Avatar,
+                IsBot = message.Author?.Bot ?? false };
             return new MessageEvent
             {
                 Platform = Platform, SelfId = selfId, Raw = raw, MessageId = message.Id,
@@ -150,7 +163,7 @@ internal static class QQEventTranslator
                 Sender = sender,
                 Member = isGroup ? new Member(sender)
                 {
-                    Nick = message.Author?.Username,
+                    Nick = string.IsNullOrWhiteSpace(message.Author?.MemberNickname) ? message.Author?.Username : message.Author.MemberNickname,
                     Role = QQIdentityMapper.Role(message.Author?.MemberRole)
                 } : null,
                 Segments = segments,
@@ -196,6 +209,7 @@ internal static class QQEventTranslator
             Time = eventTime ?? DateTimeOffset.UtcNow,
             SelfId = selfId,
             EventId = payload.Id,
+            UnionGroupOpenId = lifecycle.Group ? ReadString(raw, "union_group_openid") : null,
             Target = new QOfficialMessageTarget(
                 lifecycle.Group ? QOfficialMessageScene.Group : QOfficialMessageScene.Direct, channelId),
             OperatorId = operatorId,

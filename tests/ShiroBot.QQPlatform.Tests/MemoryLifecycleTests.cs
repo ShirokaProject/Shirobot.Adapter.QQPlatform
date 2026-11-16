@@ -8,6 +8,13 @@ using ShiroBot.Adapter.QQPlatform.Wire;
 using ShiroBot.SDK.Models;
 using Xunit;
 
+using ShiroBot.Adapter.QQPlatform.Transport;
+using ShiroBot.Adapter.QQPlatform.Transport.Gateway;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Messaging;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Official;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Groups;
+using ShiroBot.Adapter.QQPlatform.Protocol.Support;
+using ShiroBot.Adapter.QQPlatform.Protocol.Mapping;
 namespace ShiroBot.QQPlatform.Tests;
 
 public sealed class MemoryLifecycleTests
@@ -122,8 +129,9 @@ public sealed class MemoryLifecycleTests
         var tokens = new QQTokenProvider(http, config);
         var api = new QQOpenApiClient(http, config, tokens);
         var messages = new QQMessageService(api);
-        var tracker = (QQReplyTracker)Get(messages, "_replies")!;
-        var gateway = new QQGatewayClient(config, api, tokens, _ => Task.CompletedTask, _ => { }, null!);
+        var context = (QQIncomingMessageContext)Get(messages, "_context")!;
+        var tracker = (QQReplyTracker)Get(context, "_replies")!;
+        var gateway = new QQGatewayConnection(config, api, tokens, _ => Task.CompletedTask, _ => { }, null!);
         var lifetime = new CancellationTokenSource();
         Set(gateway, "_lifetime", lifetime);
         Set(gateway, "_runner", Task.FromException(new IOException("injected stop failure")));
@@ -181,7 +189,7 @@ public sealed class MemoryLifecycleTests
         cache.Clear();
         using var messages = new QQMessageService(api);
         var sent = await messages.SendOfficialAsync("channels/c/messages", "c",
-            new QQSendRequest { Content = "hello" }, null, "hello");
+            new QQOutboundContent.TextContent("hello"), null, "hello");
         Assert.Null(api.TakeSentReferenceIndex(sent.MessageId));
         Assert.Equal(0, cache.Count);
         handler.InvalidTimestamp = true;

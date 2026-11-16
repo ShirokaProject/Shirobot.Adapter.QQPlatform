@@ -8,6 +8,13 @@ using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Models;
 using Xunit;
 
+using ShiroBot.Adapter.QQPlatform.Transport;
+using ShiroBot.Adapter.QQPlatform.Transport.Gateway;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Messaging;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Official;
+using ShiroBot.Adapter.QQPlatform.AdapterImpl.Groups;
+using ShiroBot.Adapter.QQPlatform.Protocol.Support;
+using ShiroBot.Adapter.QQPlatform.Protocol.Mapping;
 namespace ShiroBot.QQPlatform.Tests;
 
 public sealed class OfficialGroupTests
@@ -254,6 +261,93 @@ public sealed class OfficialGroupTests
     }
 
     [Fact]
+    public async Task BlacklistAndBotStateFollowOfficialContract()
+    {
+        using var fixture = new Fixture { Response = """{"users":[{"member_openid":"member/a","union_openid":"union-a","username":"Alice","banned_at":"2025-07-01T10:30:00+08:00","bot":false}],"next_cursor":""}""" };
+        var page = await fixture.Groups.GetGroupBlacklistAsync("group/a", "a+b", 100);
+        Assert.Equal("member/a", Assert.Single(page.Users).UserId);
+        Assert.Equal("union-a", page.Users[0].UnionOpenId);
+        Assert.False(page.Users[0].IsBot);
+        Assert.EndsWith("/group%2Fa/member_blacklist?limit=100&cursor=a%2Bb", fixture.Requests[^1].Uri);
+        fixture.Response = """{"fail_openids":["member/b"]}""";
+        var failed = await fixture.Groups.UpdateGroupBlacklistAsync("group/a", ["member/a", "member/b"], false);
+        Assert.Equal(new[] { "member/b" }, failed);
+        Assert.Equal("del", fixture.LastBody.GetProperty("op").GetString());
+        Assert.EndsWith("/group%2Fa/member_blacklist", fixture.Requests[^1].Uri);
+        fixture.Response = """{"member_openid":"bot-1","joined_at":"2025-06-15T14:30:00+08:00","allow_proactive_msg":false,"recv_msg_setting":"only_mention","member_role":"admin"}""";
+        var state = await fixture.Groups.GetBotStateAsync("group/a");
+        Assert.Equal("bot-1", state.MemberOpenId);
+        Assert.Equal("only_mention", state.ReceiveSetting);
+        Assert.Equal(QGroupRole.Admin, state.Role);
+        Assert.EndsWith("/group%2Fa/bot_state", fixture.Requests[^1].Uri);
+        var count = fixture.Requests.Count;
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => fixture.Groups.GetGroupBlacklistAsync("g", limit: 101));
+        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Groups.UpdateGroupBlacklistAsync("g", ["a", "a"]));
+        Assert.Equal(count, fixture.Requests.Count);
+    }
+
+    [Fact]
+    public async Task GroupInfoKeepsFingerMemoClassTagsAndMemberUnionBot()
+    {
+        using var fixture = new Fixture { Response = """{"group_openid":"g","group_name":"读书会","group_finger_memo":"每周共读","group_class_text":"文化","group_tags":["阅读","文学"],"group_member_num":256,"union_group_openid":"union-g"}""" };
+        var group = await fixture.Groups.GetGroupInfoAsync("g");
+        Assert.Equal("每周共读", group.Description);
+        Assert.Equal("文化", group.ClassText);
+        Assert.Equal(new[] { "阅读", "文学" }, group.Tags);
+        Assert.Equal("union-g", group.UnionGroupOpenId);
+        fixture.Response = """{"member_openid":"m1","username":"Alice","member_role":"owner","union_openid":"union-u","bot":true}""";
+        var member = await fixture.Groups.GetGroupMemberInfoAsync("g", "m1");
+        Assert.Equal("union-u", member.UnionOpenId);
+        Assert.True(member.IsBot);
+        Assert.Equal(QGroupRole.Owner, member.Role);
+    }
+
+    [Fact]
+    public async Task PermissionDeniedIsTranslatedForInviteOnlyGroupApis()
+    {
+        using var fixture = new Fixture
+        {
+            Response = """{"err_code":40012010,"message":"应用无接口访问权限"}"""
+        };
+        var error = await Assert.ThrowsAsync<QPermissionDeniedException>(
+            () => fixture.Groups.GetGroupBlacklistAsync("group/a"));
+        Assert.Equal("群黑名单查询", error.Operation);
+        Assert.Equal(40012010, error.ErrorCode);
+
+        var stateError = await Assert.ThrowsAsync<QPermissionDeniedException>(
+            () => fixture.Groups.GetBotStateAsync("group/a"));
+        Assert.Equal("机器人群内状态", stateError.Operation);
+    }
+
+    [Fact]
+    public async Task EveryoneMentionPermissionErrorIsTranslated()
+    {
+        using var fixture = new Fixture
+        {
+            Response = """{"err_code":40034143,"message":"消息发送失败，@全体成员需要管理员权限"}"""
+        };
+        var error = await Assert.ThrowsAsync<QPermissionDeniedException>(() =>
+            fixture.Api.SendMessageAsync(Channel.Group("g"),
+                new QQSendRequest { MessageType = 2, Markdown = new QQMarkdown { Content = "hi" } }));
+        Assert.Equal("发送消息", error.Operation);
+        Assert.Equal(40034143, error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task EveryoneMentionDailyLimitIsTranslated()
+    {
+        using var fixture = new Fixture
+        {
+            Response = """{"err_code":40034142,"message":"消息发送失败，@全体成员次数超限"}"""
+        };
+        var error = await Assert.ThrowsAsync<QLimitExceededException>(() =>
+            fixture.Api.SendMessageAsync(Channel.Group("g"),
+                new QQSendRequest { MessageType = 2, Markdown = new QQMarkdown { Content = "hi" } }));
+        Assert.Equal("发送消息", error.Operation);
+        Assert.Equal(40034142, error.ErrorCode);
+    }
+
+    [Fact]
     public async Task RepeatedMemberCursorFailsInsteadOfLooping()
     {
         using var fixture = new Fixture { Response = """{"members":[],"next_cursor":"repeat"}""" };
@@ -332,8 +426,9 @@ public sealed class OfficialGroupTests
             _http = new HttpClient(this, disposeHandler: false);
             var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
             Api = new QQOpenApiClient(_http, config, new QQTokenProvider(_http, config));
-            var groups = new QQOfficialGroupService(Api);
-            Groups = groups; Strategies = groups;
+            var groups = new QQGroupService(Api);
+            var strategies = new QQGroupApprovalService(Api);
+            Groups = groups; Strategies = strategies;
         }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
