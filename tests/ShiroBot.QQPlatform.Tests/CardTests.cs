@@ -16,30 +16,29 @@ namespace ShiroBot.QQPlatform.Tests;
 
 public sealed class CardTests
 {
-    private static QOfficialCard Card => new("标题", "描述", "https://example.org/page", "https://example.org/image.png");
+    private static CardSegment Card => new()
+    {
+        Title = "标题", Description = "描述", Url = "https://example.org/page", ImageUrl = "https://example.org/image.png"
+    };
 
     [Theory]
-    [InlineData(QOfficialMessageScene.Group)]
-    [InlineData(QOfficialMessageScene.Direct)]
-    public async Task TypedCardsUseTypeEightAndPreserveReply(QOfficialMessageScene scene)
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CardsUseTypeEightWithoutTextOrMarkdown(bool group)
     {
         using var handler = new ChangelogHandler();
         using var http = new HttpClient(handler);
-        var api = handler.CreateApi(http);
-        using var messages = new QQMessageService(api);
-        var service = new QQOfficialMessageService(api, messages);
-        await service.SendAsync(new(scene, "target"), QOfficialMessage.Card(Card),
-            new() { EventId = "event", MessageSequence = 2 });
+        using var messages = new QQMessageService(handler.CreateApi(http));
+        await messages.SendMessageAsync(group ? Channel.Group("target") : Channel.Direct("target"),
+            new OutgoingMessage { Segments = [Card] });
         var request = handler.Requests.Last();
-        Assert.Equal(scene == QOfficialMessageScene.Group ? "/v2/groups/target/messages" : "/v2/users/target/messages", request.Path);
+        Assert.Equal(group ? "/v2/groups/target/messages" : "/v2/users/target/messages", request.Path);
         using var body = JsonDocument.Parse(request.Body);
         Assert.Equal(8, body.RootElement.GetProperty("msg_type").GetInt32());
-        Assert.Equal("event", body.RootElement.GetProperty("event_id").GetString());
-        Assert.Equal(2, body.RootElement.GetProperty("msg_seq").GetInt32());
         var card = body.RootElement.GetProperty("card");
         Assert.Equal("tuwen", card.GetProperty("type").GetString());
         Assert.Equal(Card.Title, card.GetProperty("content").GetProperty("title").GetString());
-        Assert.Equal(Card.PictureUrl, card.GetProperty("content").GetProperty("pic_url").GetString());
+        Assert.Equal(Card.ImageUrl, card.GetProperty("content").GetProperty("pic_url").GetString());
         Assert.False(body.RootElement.TryGetProperty("content", out _));
         Assert.False(body.RootElement.TryGetProperty("markdown", out _));
     }
@@ -53,10 +52,7 @@ public sealed class CardTests
         using var http = new HttpClient(handler);
         using var messages = new QQMessageService(handler.CreateApi(http));
         var channel = group ? Channel.Group("g") : Channel.Direct("u");
-        var outgoing = new OutgoingMessage { Segments = [new CardSegment
-        {
-            Title = Card.Title, Description = Card.Description, Url = Card.Url, ImageUrl = Card.PictureUrl
-        }] };
+        var outgoing = new OutgoingMessage { Segments = [Card] };
         Assert.True(messages.AssessMessage(channel, outgoing).IsNative);
         var sent = await messages.SendMessageAsync(channel, outgoing);
         Assert.Empty(sent.Transformations);
@@ -77,7 +73,7 @@ public sealed class CardTests
             "title" => Card with { Title = new string('a', 51) },
             "description" => Card with { Description = "" },
             "url" => Card with { Url = "http://example.org" },
-            "picture" => Card with { PictureUrl = "qqbot-media://image/v1/token" },
+            "picture" => Card with { ImageUrl = "qqbot-media://image/v1/token" },
             _ => Card with { Url = "https://example.org/" + new string('a', 1024) }
         };
         Assert.Throws<ArgumentException>(() => QQCardMapper.Map(card));
@@ -91,15 +87,14 @@ public sealed class CardTests
     }
 
     [Fact]
-    public async Task UnsupportedSceneAndCanceledCardsDoNotSend()
+    public async Task CanceledCardsAndCardsWithFieldsDoNotSend()
     {
         using var handler = new ChangelogHandler();
         using var http = new HttpClient(handler);
-        var api = handler.CreateApi(http);
-        using var messages = new QQMessageService(api);
-        var service = new QQOfficialMessageService(api, messages);
-        await Assert.ThrowsAsync<NotSupportedException>(() => service.SendAsync(new(QOfficialMessageScene.Channel, "c"), QOfficialMessage.Card(Card)));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.SendAsync(new(QOfficialMessageScene.Group, "g"), QOfficialMessage.Card(Card), cancellationToken: new(true)));
+        using var messages = new QQMessageService(handler.CreateApi(http));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => messages.SendMessageAsync(Channel.Group("g"),
+            new OutgoingMessage { Segments = [Card] }, new CancellationToken(true)));
+        Assert.Throws<NotSupportedException>(() => QQCardMapper.Map(Card with { Fields = [new CardField("k", "v")] }));
         Assert.Empty(handler.Requests);
     }
 }

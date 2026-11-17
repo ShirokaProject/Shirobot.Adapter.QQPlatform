@@ -1,4 +1,5 @@
 using ShiroBot.Model.QQ;
+using ShiroBot.SDK.Models;
 
 namespace ShiroBot.Adapter.QQPlatform.Protocol;
 
@@ -24,7 +25,7 @@ internal abstract record QQOutboundContent
     public sealed record MarkdownContent(QOfficialMarkdown Markdown, QOfficialKeyboard? Keyboard)
         : QQOutboundContent;
 
-    public sealed record CardContent(QOfficialCard Card) : QQOutboundContent;
+    public sealed record CardContent(CardSegment Card) : QQOutboundContent;
 
     public sealed record ArkContent(int TemplateId, IReadOnlyDictionary<string, string> Fields)
         : QQOutboundContent;

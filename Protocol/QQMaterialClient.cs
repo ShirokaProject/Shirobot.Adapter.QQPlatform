@@ -75,7 +75,7 @@ internal sealed class QQMaterialClient(QQApiTransport transport, HttpClient uplo
         using var response = await transport.SendAsync(HttpMethod.Get, route, null, cancellationToken).ConfigureAwait(false);
         var value = await ReadAsync(response, cancellationToken).ConfigureAwait(false);
         var images = value.GetProperty("images").EnumerateArray().Select(Map).ToArray();
-        return new(images, QQOfficialGroupMapper.Text(value, "next_cursor"), value.GetProperty("total").GetUInt64());
+        return new(images, QQOfficialGroupMapper.Text(value, "next_cursor"), value.GetProperty("total").GetInt32());
     }
 
     public async Task DeleteImageAsync(string imageId, CancellationToken cancellationToken = default)
@@ -101,7 +101,6 @@ internal sealed class QQMaterialClient(QQApiTransport transport, HttpClient uplo
         {
             FileName = QQOfficialGroupMapper.Text(value, "file_name"),
             PreviewUrl = QQOfficialGroupMapper.Text(value, "preview_url"),
-            Ttl = value.TryGetProperty("ttl", out var ttl) ? ttl.GetInt64() : null,
             CreatedAt = Time(value, "created_at"), ExpiresAt = Time(value, "expires_at")
         };
     }

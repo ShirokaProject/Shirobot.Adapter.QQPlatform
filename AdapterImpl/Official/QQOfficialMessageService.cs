@@ -27,11 +27,6 @@ internal sealed class QQOfficialMessageService(
         cancellationToken.ThrowIfCancellationRequested();
         switch (message)
         {
-            case QOfficialCardMessage card:
-                if (target.Scene is not (QOfficialMessageScene.Group or QOfficialMessageScene.Direct))
-                    throw new NotSupportedException("QQ image-text cards support group and direct messages only.");
-                return (await SendToTargetAsync(target, new QQOutboundContent.CardContent(card.Content),
-                    reply, "[图文卡片]", cancellationToken).ConfigureAwait(false)).MessageId;
             case QOfficialTextMessage text:
                 ArgumentException.ThrowIfNullOrWhiteSpace(text.Content);
                 return (await SendToTargetAsync(target, new QQOutboundContent.TextContent(text.Content),

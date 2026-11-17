@@ -67,19 +67,19 @@ public sealed partial class RichDemoPlugin
                 .ConfigureAwait(false);
             return;
         }
-        var users = Context.GetAdapterExtension<IQOfficialUserApi>();
+        var users = Context.GetAdapterExtension<IQSystemApi>();
         if (users is null)
         {
-            await ReplyAsync(message, "当前适配器未提供 IQOfficialUserApi。").ConfigureAwait(false);
+            await ReplyAsync(message, "当前适配器未提供 IQSystemApi。").ConfigureAwait(false);
             return;
         }
-        var user = await users.GetUserInfoAsync(message.Sender.Id, Stopping).ConfigureAwait(false);
-        await SendProfileAsync(message, new User(user.UserOpenId)
+        var user = await users.GetUserProfileAsync(message.Sender.Id, Stopping).ConfigureAwait(false);
+        await SendProfileAsync(message, new User(user.UserId)
         {
-            Name = user.Username,
+            Name = user.Nickname,
             AvatarUrl = user.AvatarUrl
         }, null, "GET /v2/users/{user_openid}/info",
-            $"union_openid: {user.UnionOpenId ?? "未提供"}\n接收主动推送: {user.AllowProactiveMessage}")
+            $"union_openid: {user.UnionId ?? "未提供"}\n接收主动推送: {Describe(user.AllowProactiveMessage)}")
             .ConfigureAwait(false);
     }
 
@@ -123,7 +123,7 @@ public sealed partial class RichDemoPlugin
         lines.Add($"分类: {OrMissing(group.ClassText)}");
         lines.Add($"标签: {JoinTags(group.Tags)}");
         lines.Add($"成员数: {group.MemberCount?.ToString() ?? "未提供"}");
-        lines.Add($"查询 union_group_openid: {OrMissing(group.UnionGroupOpenId)}");
+        lines.Add($"查询 union_group_openid: {OrMissing(group.UnionId)}");
         lines.Add($"群能力: {Describe(groups.Capabilities)}");
 
         if (groups.Capabilities.HasFlag(QGroupCapabilities.BotState))
@@ -131,9 +131,9 @@ public sealed partial class RichDemoPlugin
             try
             {
                 var state = await groups.GetBotStateAsync(channel.Id, Stopping).ConfigureAwait(false);
-                lines.Add($"机器人状态: {OrMissing(state.MemberOpenId)} / {state.Role} / " +
+                lines.Add($"机器人状态: {state.Member.UserId} / {state.Member.Role} / " +
                     $"主动推送 {state.AllowProactiveMessage}");
-                lines.Add($"接收设置: {OrMissing(state.ReceiveSetting)}");
+                lines.Add($"接收设置: {state.ReceiveSetting}");
             }
             catch (QPermissionDeniedException)
             {
@@ -151,7 +151,7 @@ public sealed partial class RichDemoPlugin
             {
                 var page = await groups.GetGroupBlacklistAsync(channel.Id, limit: 1, cancellationToken: Stopping)
                     .ConfigureAwait(false);
-                lines.Add($"群黑名单: 可查询，本页 {page.Users.Count} 条" +
+                lines.Add($"群黑名单: 可查询，本页 {page.Members.Count} 条" +
                     (string.IsNullOrEmpty(page.NextCursor) ? "，已到末页" : "，还有下一页"));
             }
             catch (QPermissionDeniedException)
@@ -166,6 +166,8 @@ public sealed partial class RichDemoPlugin
 
         return string.Join("\n", lines);
     }
+
+    private static string Describe(bool? value) => value?.ToString() ?? "未提供";
 
     private static string OrMissing(string? value) =>
         string.IsNullOrWhiteSpace(value) ? "未提供" : value;
@@ -345,12 +347,12 @@ public sealed partial class RichDemoPlugin
     {
         if (channel.Type != ChannelType.Direct)
             return Text("用户资料测试仅在私聊可用；群内请用 #about 查看群成员资料。");
-        var users = Context.GetAdapterExtension<IQOfficialUserApi>();
-        if (users is null) return Text("当前适配器未提供 IQOfficialUserApi。");
-        var info = await users.GetUserInfoAsync(user.Id, Stopping).ConfigureAwait(false);
-        return ProfileMessage(new User(info.UserOpenId) { Name = info.Username, AvatarUrl = info.AvatarUrl },
-            channel, null, "IQOfficialUserApi", $"union_openid: {info.UnionOpenId ?? "未提供"}\n" +
-            $"接收主动推送: {info.AllowProactiveMessage}");
+        var users = Context.GetAdapterExtension<IQSystemApi>();
+        if (users is null) return Text("当前适配器未提供 IQSystemApi。");
+        var info = await users.GetUserProfileAsync(user.Id, Stopping).ConfigureAwait(false);
+        return ProfileMessage(new User(info.UserId) { Name = info.Nickname, AvatarUrl = info.AvatarUrl },
+            channel, null, "IQSystemApi", $"union_openid: {info.UnionId ?? "未提供"}\n" +
+            $"接收主动推送: {Describe(info.AllowProactiveMessage)}");
     }
 
     private async Task<OutgoingMessage> TestFileUploadAsync(Channel channel)
@@ -409,7 +411,7 @@ public sealed partial class RichDemoPlugin
             $"官方消息: {Context.GetAdapterExtension<IQOfficialMessageApi>() is not null}",
             $"官方媒体: {Context.GetAdapterExtension<IQOfficialMediaApi>() is not null}",
             $"素材管理: {Context.GetAdapterExtension<IQOfficialMaterialApi>() is not null}",
-            $"用户资料: {Context.GetAdapterExtension<IQOfficialUserApi>() is not null}",
+            $"用户资料: {Context.GetAdapterExtension<IQSystemApi>() is not null}",
             $"文件上传: {Context.GetAdapterExtension<IFileService>() is not null}",
             $"私聊流式: {Context.GetAdapterExtension<IQOfficialDirectMessageApi>() is not null}",
             $"官方群管理: {groups is not null}",
@@ -418,7 +420,8 @@ public sealed partial class RichDemoPlugin
         return string.Join("\n", lines);
     }
 
-    private async Task SendCardDemoAsync(MessageEvent message, bool generic)
+    /// <summary>QQ image-text cards are sent as the SDK's CardSegment; the adapter maps them to msg_type=8.</summary>
+    private async Task SendCardDemoAsync(MessageEvent message)
     {
         var config = Settings;
         if (!IsHttpsUrl(config.CardUrl) || !IsHttpsUrl(config.CardImageUrl))
@@ -428,43 +431,29 @@ public sealed partial class RichDemoPlugin
             return;
         }
 
-        if (generic)
+        var outgoing = new OutgoingMessage
         {
-            var outgoing = new OutgoingMessage
-            {
-                Segments =
-                [
-                    new CardSegment
-                    {
-                        Title = config.CardTitle,
-                        Description = config.CardDescription,
-                        Url = config.CardUrl,
-                        ImageUrl = config.CardImageUrl
-                    }
-                ]
-            };
-            var assessment = Context.Message.AssessMessage(
-                new ChannelReference(message.InstanceId ?? throw new InvalidOperationException("Instance required."),
-                    message.Channel), outgoing);
-            if (!assessment.IsSupported)
-            {
-                await ReplyAsync(message, "当前适配器或卡片参数不支持原生图文卡片，未静默降级。")
-                    .ConfigureAwait(false);
-                return;
-            }
-            await ReplyAsync(message, outgoing).ConfigureAwait(false);
-            return;        }
-
-        var official = Context.GetAdapterExtension<IQOfficialMessageApi>();
-        if (official is null)
+            Segments =
+            [
+                new CardSegment
+                {
+                    Title = config.CardTitle,
+                    Description = config.CardDescription,
+                    Url = config.CardUrl,
+                    ImageUrl = config.CardImageUrl
+                }
+            ]
+        };
+        var assessment = Context.Message.AssessMessage(
+            new ChannelReference(message.InstanceId ?? throw new InvalidOperationException("Instance required."),
+                message.Channel), outgoing);
+        if (!assessment.IsSupported)
         {
-            await ReplyAsync(message, "当前适配器未提供 IQOfficialMessageApi。").ConfigureAwait(false);
+            await ReplyAsync(message, "当前适配器或卡片参数不支持原生图文卡片，未静默降级。")
+                .ConfigureAwait(false);
             return;
         }
-        await official.SendAsync(Target(message),
-            QOfficialMessage.Card(new QOfficialCard(config.CardTitle, config.CardDescription, config.CardUrl,
-                config.CardImageUrl)),
-            new QOfficialMessageReply { MessageId = message.MessageId }, Stopping).ConfigureAwait(false);
+        await ReplyAsync(message, outgoing).ConfigureAwait(false);
     }
 
     private static bool IsHttpsUrl(string? value) =>

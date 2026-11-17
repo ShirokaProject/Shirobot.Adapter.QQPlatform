@@ -265,9 +265,12 @@ public sealed class OfficialGroupTests
     {
         using var fixture = new Fixture { Response = """{"users":[{"member_openid":"member/a","union_openid":"union-a","username":"Alice","banned_at":"2025-07-01T10:30:00+08:00","bot":false}],"next_cursor":""}""" };
         var page = await fixture.Groups.GetGroupBlacklistAsync("group/a", "a+b", 100);
-        Assert.Equal("member/a", Assert.Single(page.Users).UserId);
-        Assert.Equal("union-a", page.Users[0].UnionOpenId);
-        Assert.False(page.Users[0].IsBot);
+        var entry = Assert.Single(page.Members);
+        Assert.Equal("member/a", entry.UserId);
+        Assert.Equal("union-a", entry.UnionId);
+        Assert.Equal("Alice", entry.Username);
+        Assert.Equal(DateTimeOffset.Parse("2025-07-01T10:30:00+08:00"), entry.BlacklistedAt);
+        Assert.False(entry.IsBot);
         Assert.EndsWith("/group%2Fa/member_blacklist?limit=100&cursor=a%2Bb", fixture.Requests[^1].Uri);
         fixture.Response = """{"fail_openids":["member/b"]}""";
         var failed = await fixture.Groups.UpdateGroupBlacklistAsync("group/a", ["member/a", "member/b"], false);
@@ -276,9 +279,13 @@ public sealed class OfficialGroupTests
         Assert.EndsWith("/group%2Fa/member_blacklist", fixture.Requests[^1].Uri);
         fixture.Response = """{"member_openid":"bot-1","joined_at":"2025-06-15T14:30:00+08:00","allow_proactive_msg":false,"recv_msg_setting":"only_mention","member_role":"admin"}""";
         var state = await fixture.Groups.GetBotStateAsync("group/a");
-        Assert.Equal("bot-1", state.MemberOpenId);
-        Assert.Equal("only_mention", state.ReceiveSetting);
-        Assert.Equal(QGroupRole.Admin, state.Role);
+        Assert.Equal("bot-1", state.Member.UserId);
+        Assert.Equal("group/a", state.Member.GroupId);
+        Assert.True(state.Member.IsBot);
+        Assert.Equal(QGroupRole.Admin, state.Member.Role);
+        Assert.Equal(DateTimeOffset.Parse("2025-06-15T14:30:00+08:00"), state.Member.JoinTime);
+        Assert.Equal(QGroupReceiveSetting.MentionOnly, state.ReceiveSetting);
+        Assert.False(state.AllowProactiveMessage);
         Assert.EndsWith("/group%2Fa/bot_state", fixture.Requests[^1].Uri);
         var count = fixture.Requests.Count;
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => fixture.Groups.GetGroupBlacklistAsync("g", limit: 101));
@@ -294,10 +301,10 @@ public sealed class OfficialGroupTests
         Assert.Equal("每周共读", group.Description);
         Assert.Equal("文化", group.ClassText);
         Assert.Equal(new[] { "阅读", "文学" }, group.Tags);
-        Assert.Equal("union-g", group.UnionGroupOpenId);
+        Assert.Equal("union-g", group.UnionId);
         fixture.Response = """{"member_openid":"m1","username":"Alice","member_role":"owner","union_openid":"union-u","bot":true}""";
         var member = await fixture.Groups.GetGroupMemberInfoAsync("g", "m1");
-        Assert.Equal("union-u", member.UnionOpenId);
+        Assert.Equal("union-u", member.UnionId);
         Assert.True(member.IsBot);
         Assert.Equal(QGroupRole.Owner, member.Role);
     }

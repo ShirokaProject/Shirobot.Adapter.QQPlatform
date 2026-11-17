@@ -35,12 +35,8 @@ internal sealed class QQOutboundMessagePipeline(
         SentMessage result;
         if (prepared.Message.Segments.OfType<CardSegment>().SingleOrDefault() is { } card)
         {
-            if (card.Fields.Count != 0)
-                throw new NotSupportedException("QQ image-text cards cannot contain extra fields.");
             var quote = prepared.Message.Segments.OfType<QuoteSegment>().SingleOrDefault();
-            result = await SendOfficialAsync(channel,
-                new QQOutboundContent.CardContent(new QOfficialCard(card.Title!, card.Description!,
-                    card.Url!, card.ImageUrl!)),
+            result = await SendOfficialAsync(channel, new QQOutboundContent.CardContent(card),
                 prepared.Message.ReplyToInteraction is { } cardInteraction
                     ? context.ResolveInteractionReply(cardInteraction)
                     : quote is null ? null : new QOfficialMessageReply

@@ -44,7 +44,6 @@ internal static class QQEventTranslator
                     Raw = new QGroupMemberIncrease
                     {
                         GroupId = groupId, UserId = memberId, GlobalUserId = QQOfficialGroupMapper.Text(raw, "user_openid"),
-                        UnionGroupOpenId = QQOfficialGroupMapper.Text(raw, "union_group_openid"),
                         EventId = payload.Id, Time = QQOfficialGroupMapper.Time(raw), SelfId = selfId
                     }
                 }
@@ -54,7 +53,6 @@ internal static class QQEventTranslator
                     Raw = new QGroupMemberDecrease
                     {
                         GroupId = groupId, UserId = memberId, GlobalUserId = QQOfficialGroupMapper.Text(raw, "user_openid"),
-                        UnionGroupOpenId = QQOfficialGroupMapper.Text(raw, "union_group_openid"),
                         EventId = payload.Id, Time = QQOfficialGroupMapper.Time(raw), SelfId = selfId
                     }
                 };
@@ -209,7 +207,6 @@ internal static class QQEventTranslator
             Time = eventTime ?? DateTimeOffset.UtcNow,
             SelfId = selfId,
             EventId = payload.Id,
-            UnionGroupOpenId = lifecycle.Group ? ReadString(raw, "union_group_openid") : null,
             Target = new QOfficialMessageTarget(
                 lifecycle.Group ? QOfficialMessageScene.Group : QOfficialMessageScene.Direct, channelId),
             OperatorId = operatorId,

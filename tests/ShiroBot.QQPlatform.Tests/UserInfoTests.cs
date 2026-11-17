@@ -20,7 +20,7 @@ namespace ShiroBot.QQPlatform.Tests;
 public sealed class UserInfoTests
 {
     [Fact]
-    public async Task GenericAndOfficialUserLookupsUseRequestedOpenId()
+    public async Task GenericAndQqProfileLookupsUseRequestedOpenId()
     {
         using var handler = new ChangelogHandler();
         using var http = new HttpClient(handler);
@@ -31,9 +31,12 @@ public sealed class UserInfoTests
         Assert.Equal("user/1", user!.Id);
         Assert.Equal("用户昵称", user.Name);
         Assert.Equal("https://example.org/avatar.png", user.AvatarUrl);
-        var info = await ((IQOfficialUserApi)users).GetUserInfoAsync("user/1");
-        Assert.Equal("union-user", info.UnionOpenId);
-        Assert.True(info.AllowProactiveMessage);
+        var profile = await ((IQSystemApi)users).GetUserProfileAsync("user/1");
+        Assert.Equal("user/1", profile.UserId);
+        Assert.Equal("用户昵称", profile.Nickname);
+        Assert.Equal("https://example.org/avatar.png", profile.AvatarUrl);
+        Assert.Equal("union-user", profile.UnionId);
+        Assert.True(profile.AllowProactiveMessage);
         Assert.Contains(handler.Requests, x => x.Method == "GET" && x.Path == "/v2/users/user%2F1/info" && x.Authorization == "QQBot token");
     }
 
@@ -44,11 +47,11 @@ public sealed class UserInfoTests
         using var http = new HttpClient(handler);
         var users = new QQUserService();
         users.Attach(handler.CreateApi(http));
-        await Assert.ThrowsAsync<ArgumentException>(() => users.GetUserInfoAsync(" "));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => users.GetUserInfoAsync("u", new CancellationToken(true)));
+        await Assert.ThrowsAsync<ArgumentException>(() => users.GetUserProfileAsync(" "));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => users.GetUserProfileAsync("u", new CancellationToken(true)));
         Assert.Empty(handler.Requests);
         users.Attach(null);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => users.GetUserInfoAsync("u"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => users.GetUserProfileAsync("u"));
     }
 
     [Fact]
@@ -100,7 +103,7 @@ public sealed class UserInfoTests
         using var http = new HttpClient(handler);
         var group = await new QQGroupService(handler.CreateApi(http)).GetGroupInfoAsync("g");
         Assert.Equal("g", group.GroupId);
-        Assert.Equal("union-group", group.UnionGroupOpenId);
+        Assert.Equal("union-group", group.UnionId);
     }
 
     [Theory]
@@ -111,19 +114,24 @@ public sealed class UserInfoTests
     [InlineData("GROUP_MEMBER_ADD")]
     [InlineData("GROUP_MEMBER_REMOVE")]
     [InlineData("GROUP_JOIN_REQUEST")]
-    public void TypedGroupEventsKeepUnionId(string eventType)
+    public void TypedGroupEventsKeepTheRoutingGroupId(string eventType)
     {
+        // The group's union id is read from IQGroupApi.GetGroupInfoAsync (QGroup.UnionId); events carry the
+        // group_openid that every group call takes, and member joins and leaves arrive as the SDK's
+        // MemberJoinedEvent / MemberLeftEvent with the QQ payload as Raw.
         using var json = JsonDocument.Parse("""{"group_openid":"g","union_group_openid":"union-group","member_openid":"member","join_request_id":"request","op_member_openid":"operator"}""");
         var result = QQEventTranslator.Translate(new GatewayPayload(0, json.RootElement, 1, eventType, "event"), "self");
         Assert.NotNull(result);
-        var unionId = result.Raw switch
+        var groupId = result.Raw switch
         {
-            QOfficialLifecycleEvent lifecycle => lifecycle.UnionGroupOpenId,
-            QGroupMemberIncrease increase => increase.UnionGroupOpenId,
-            QGroupMemberDecrease decrease => decrease.UnionGroupOpenId,
-            QGroupJoinRequest request => request.UnionGroupOpenId,
+            QOfficialLifecycleEvent lifecycle => lifecycle.Target.Id,
+            QGroupMemberIncrease increase => increase.GroupId,
+            QGroupMemberDecrease decrease => decrease.GroupId,
+            QGroupJoinRequest request => request.GroupId,
             _ => throw new InvalidOperationException("Unexpected event payload.")
         };
-        Assert.Equal("union-group", unionId);
+        Assert.Equal("g", groupId);
+        if (eventType == "GROUP_MEMBER_ADD") Assert.IsType<MemberJoinedEvent>(result);
+        if (eventType == "GROUP_MEMBER_REMOVE") Assert.IsType<MemberLeftEvent>(result);
     }
 }

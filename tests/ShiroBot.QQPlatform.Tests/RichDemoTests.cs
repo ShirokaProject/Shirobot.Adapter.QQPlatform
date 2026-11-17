@@ -73,7 +73,7 @@ public sealed class RichDemoTests
         fixture.Config.CardImageUrl = "https://example.org/image.png";
         await fixture.Plugin.OnLoad(fixture.Context);
         Assert.Equal(typeof(RichDemoConfig), ((IConfigurableComponent)fixture.Plugin).ConfigType);
-        await fixture.DispatchAsync("/genericcardtest");
+        await fixture.DispatchAsync("/cardtest");
         var card = Assert.IsType<CardSegment>(Assert.Single(Assert.Single(fixture.Replies).Content.Segments));
         Assert.Equal(fixture.Config.CardTitle, card.Title);
         Assert.Equal(fixture.Config.CardImageUrl, card.ImageUrl);
@@ -187,13 +187,13 @@ public sealed class RichDemoTests
     {
         var fixture = new Fixture();
         var calls = new List<string>();
-        fixture.Users = Proxy<IQOfficialUserApi>((_, args) =>
+        fixture.Users = Proxy<IQSystemApi>((_, args) =>
         {
             calls.Add((string)args[0]!);
-            return Task.FromResult(new QOfficialUserInfo((string)args[0]!)
+            return Task.FromResult(new QUserProfile
             {
-                Username = "查询名称", AvatarUrl = "https://example.org/user.png", UnionOpenId = "union-user",
-                AllowProactiveMessage = true
+                UserId = (string)args[0]!, Nickname = "查询名称", AvatarUrl = "https://example.org/user.png",
+                UnionId = "union-user", AllowProactiveMessage = true
             });
         });
         await fixture.Plugin.OnLoad(fixture.Context);
@@ -355,7 +355,7 @@ public sealed class RichDemoTests
                 ClassText = "文化",
                 Tags = ["阅读", "文学"],
                 MemberCount = 256,
-                UnionGroupOpenId = "union-g"
+                UnionId = "union-g"
             });
 
         public Task<QGroupBotState> GetBotStateAsync(string groupId,
@@ -373,7 +373,7 @@ public sealed class RichDemoTests
         public RichDemoConfig Config { get; } = new();
         public bool Admin { get; set; }
         public IQOfficialMaterialApi? Materials { get; set; }
-        public IQOfficialUserApi? Users { get; set; }
+        public IQSystemApi? Users { get; set; }
         public IQOfficialMessageApi? Official { get; set; }
         public IQGroupApi? Groups { get; set; }
         public List<(object Source, OutgoingMessage Content)> Replies { get; } = [];
@@ -404,7 +404,7 @@ public sealed class RichDemoTests
                 "GetHostStatus" => null,
                 "IsAdmin" => Admin && args[0] is UserReference { InstanceId: "qq-main" },
                 "GetAdapterExtension" => method.GetGenericArguments()[0] == typeof(IQOfficialMaterialApi) ? (object?)Materials
-                    : method.GetGenericArguments()[0] == typeof(IQOfficialUserApi) ? (object?)Users
+                    : method.GetGenericArguments()[0] == typeof(IQSystemApi) ? (object?)Users
                     : method.GetGenericArguments()[0] == typeof(IQOfficialMessageApi) ? Official
                     : method.GetGenericArguments()[0] == typeof(IQGroupApi) ? Groups : null,
                 _ => throw new NotSupportedException(method.Name)

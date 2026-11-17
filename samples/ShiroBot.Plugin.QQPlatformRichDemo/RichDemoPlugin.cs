@@ -18,8 +18,7 @@ public sealed partial class RichDemoPlugin : PluginBase<RichDemoConfig>
         #userinfo 私聊用户资料
         #groupinfo 群资料、统一标识、机器人状态、黑名单
         #mdtest Markdown 与按钮
-        #cardtest 官方图文卡片
-        #genericcardtest SDK 图文卡片
+        #cardtest 图文卡片（SDK CardSegment）
         #imagetest 图片
         #mediaimage 图片文件
         #mediaaudio 语音 mp3
@@ -59,8 +58,7 @@ public sealed partial class RichDemoPlugin : PluginBase<RichDemoConfig>
         Map("replyaudio", message => SendMediaCommandAsync(message, "demo.mp3", quote: true));
         Map("replyvideo", message => SendMediaCommandAsync(message, "demo.mp4", quote: true));
         Map("replyfile", message => SendMediaCommandAsync(message, "demo.pdf", quote: true));
-        Map("cardtest", message => SendCardDemoAsync(message, generic: false));
-        Map("genericcardtest", message => SendCardDemoAsync(message, generic: true));
+        Map("cardtest", SendCardDemoAsync);
         Map("imagetest", SendImageAsync);
         Map("mediaimage", SendImageAssetAsync);
         Map("mediaaudio", message => SendMediaCommandAsync(message, "demo.mp3"));

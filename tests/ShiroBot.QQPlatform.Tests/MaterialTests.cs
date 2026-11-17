@@ -30,7 +30,6 @@ public sealed class MaterialTests
         Assert.True(stream.CanRead);
         Assert.Equal("image-1", material.ImageId);
         Assert.Equal("qqbot-media://image/v1/token", material.Url);
-        Assert.Equal(7776000, material.Ttl);
         var put = handler.Requests.Single(x => x.Method == "PUT");
         Assert.Null(put.Authorization);
         Assert.Equal("image/png", put.ContentType);
@@ -93,7 +92,7 @@ public sealed class MaterialTests
         var api = handler.CreateApi(http).Materials;
         var page = await api.GetImagesAsync("a&b");
         Assert.Equal("image-1", Assert.Single(page.Images).ImageId);
-        Assert.Equal(1UL, page.Total);
+        Assert.Equal(1, page.Total);
         Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1), page.Images[0].CreatedAt);
         await api.DeleteImageAsync("image/1");
         Assert.Contains(handler.Requests, x => x.Path.EndsWith("?cursor=a%26b"));

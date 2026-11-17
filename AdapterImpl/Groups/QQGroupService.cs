@@ -23,7 +23,7 @@ internal sealed class QQGroupService(QQOpenApiClient api) : IQGroupApi
             GroupId = groupId,
             GroupName = info.GroupName,
             MemberCount = info.MemberCount,
-            UnionGroupOpenId = info.UnionGroupOpenId,
+            UnionId = info.UnionGroupOpenId,
             Description = info.FingerMemo,
             ClassText = info.ClassText,
             Tags = info.Tags ?? []
@@ -116,8 +116,8 @@ internal sealed class QQGroupService(QQOpenApiClient api) : IQGroupApi
             if (limit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(limit));
             var page = await api.GetGroupBlacklistAsync(groupOpenId, cursor, limit, cancellationToken)
                 .ConfigureAwait(false);
-            return new QGroupBlacklistPage((page.Users ?? []).Select(QQOfficialGroupMapper.BlacklistUser).ToArray(),
-                page.NextCursor);
+            return new QGroupBlacklistPage(
+                (page.Users ?? []).Select(QQOfficialGroupMapper.BlacklistedMember).ToArray(), page.NextCursor);
         });
 
     public Task<IReadOnlyList<string>> UpdateGroupBlacklistAsync(string groupOpenId,
@@ -136,7 +136,7 @@ internal sealed class QQGroupService(QQOpenApiClient api) : IQGroupApi
     public Task<QGroupBotState> GetBotStateAsync(string groupOpenId,
         CancellationToken cancellationToken = default) =>
         GuardAsync("机器人群内状态", async () =>
-            QQOfficialGroupMapper.BotState(await api.GetGroupBotStateAsync(groupOpenId, cancellationToken)
+            QQOfficialGroupMapper.BotState(groupOpenId, await api.GetGroupBotStateAsync(groupOpenId, cancellationToken)
                 .ConfigureAwait(false)));
 
     private static async Task<T> GuardAsync<T>(string operation, Func<Task<T>> action)

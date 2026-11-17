@@ -31,7 +31,6 @@ internal static class QQOfficialGroupMapper
         return new QGroupJoinRequest
         {
             GroupId = groupId, UserId = Text(value, "member_openid") ?? "",
-            UnionGroupOpenId = Text(value, "union_group_openid"),
             RequestId = Text(value, "join_request_id") ?? "", EventId = eventId,
             Time = Time(value), SelfId = selfId,
             Username = Text(value, "username"), Comment = Text(Object(value, "verify_info"), "verify_message"), UnionId = Text(value, "union_openid"),
@@ -79,26 +78,38 @@ internal static class QQOfficialGroupMapper
             Nickname = user.Username,
             Card = user.MemberNickname,
             Role = Role(user.MemberRole),
-            UnionOpenId = user.UnionOpenId,
+            UnionId = user.UnionOpenId,
             IsBot = user.Bot,
             JoinTime = DateTimeOffset.TryParse(user.JoinedAt, out var joined) ? joined : null
         };
     }
 
-    internal static QGroupBlacklistUser BlacklistUser(QQGroupBlacklistUser user) => new()    {
-        UserId = user.MemberOpenId ?? throw new InvalidDataException("QQ blacklist entry has no member_openid."),
-        UnionOpenId = user.UnionOpenId,
-        Nickname = user.Username,
-        BannedAt = DateTimeOffset.TryParse(user.BannedAt, out var banned) ? banned : null,
-        IsBot = user.Bot
+    internal static QBlacklistedMember BlacklistedMember(QQGroupBlacklistUser user) =>
+        new(user.MemberOpenId ?? throw new InvalidDataException("QQ blacklist entry has no member_openid."),
+            DateTimeOffset.TryParse(user.BannedAt, out var banned) ? banned : null, user.Username, user.UnionOpenId)
+        {
+            IsBot = user.Bot
+        };
+
+    internal static QGroupBotState BotState(string groupId, QQGroupBotState state) => new()
+    {
+        Member = new QGroupMember
+        {
+            GroupId = groupId,
+            UserId = state.MemberOpenId ?? throw new InvalidDataException("QQ bot state has no member_openid."),
+            Role = Role(state.MemberRole),
+            JoinTime = DateTimeOffset.TryParse(state.JoinedAt, out var joined) ? joined : null,
+            IsBot = true
+        },
+        AllowProactiveMessage = state.AllowProactiveMessage,
+        ReceiveSetting = ReceiveSetting(state.ReceiveSetting)
     };
 
-    internal static QGroupBotState BotState(QQGroupBotState state) => new()
+    internal static QGroupReceiveSetting ReceiveSetting(string? setting) => setting switch
     {
-        MemberOpenId = state.MemberOpenId!,
-        JoinedAt = DateTimeOffset.TryParse(state.JoinedAt, out var joined) ? joined : null,
-        AllowProactiveMessage = state.AllowProactiveMessage,
-        ReceiveSetting = state.ReceiveSetting,
-        Role = Role(state.MemberRole)
+        "all" => QGroupReceiveSetting.All,
+        "only_mention" => QGroupReceiveSetting.MentionOnly,
+        "mention_and_context" => QGroupReceiveSetting.MentionAndContext,
+        _ => QGroupReceiveSetting.Unknown
     };
 }

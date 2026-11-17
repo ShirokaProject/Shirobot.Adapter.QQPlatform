@@ -5,8 +5,11 @@ using ShiroBot.SDK.Models;
 
 namespace ShiroBot.Adapter.QQPlatform.AdapterImpl;
 
-/// <summary>Maps the QQ official user endpoints onto the host identity contracts.</summary>
-internal sealed class QQUserService : IUserService, IQOfficialUserApi
+/// <summary>
+///     Maps the QQ official user endpoint onto the host identity contract (<see cref="IUserService" />) and the
+///     QQ profile contract (<see cref="IQSystemApi" />), which adds the union ID and proactive-message consent.
+/// </summary>
+internal sealed class QQUserService : IUserService, IQSystemApi
 {
     private QQOpenApiClient? _api;
 
@@ -20,25 +23,25 @@ internal sealed class QQUserService : IUserService, IQOfficialUserApi
         return Task.FromResult(Self ?? throw new InvalidOperationException("QQ bot identity is not ready."));
     }
 
-    public async Task<QOfficialUserInfo> GetUserInfoAsync(string userOpenId,
-        CancellationToken cancellationToken = default)
+    public async Task<QUserProfile> GetUserProfileAsync(string userId, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(userOpenId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
         cancellationToken.ThrowIfCancellationRequested();
         var api = _api ?? throw new InvalidOperationException("QQ adapter is not running.");
-        var user = await api.GetUserInfoAsync(userOpenId, cancellationToken).ConfigureAwait(false);
-        return new QOfficialUserInfo(userOpenId)
+        var user = await api.GetUserInfoAsync(userId, cancellationToken).ConfigureAwait(false);
+        return new QUserProfile
         {
-            Username = user.Username,
+            UserId = userId,
+            Nickname = user.Username,
             AvatarUrl = user.Avatar,
-            UnionOpenId = user.UnionOpenId,
+            UnionId = user.UnionOpenId,
             AllowProactiveMessage = user.AllowProactiveMessage
         };
     }
 
     public async Task<User?> GetUserAsync(string userId, CancellationToken cancellationToken = default)
     {
-        var user = await GetUserInfoAsync(userId, cancellationToken).ConfigureAwait(false);
-        return new User(user.UserOpenId) { Name = user.Username, AvatarUrl = user.AvatarUrl };
+        var profile = await GetUserProfileAsync(userId, cancellationToken).ConfigureAwait(false);
+        return new User(profile.UserId) { Name = profile.Nickname, AvatarUrl = profile.AvatarUrl };
     }
 }
