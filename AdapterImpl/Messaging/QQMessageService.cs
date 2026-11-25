@@ -23,10 +23,11 @@ internal sealed class QQMessageService : IMessageService, IDisposable
         IConsoleLogger? logger = null,
         Func<User?>? getSelfUser = null,
         TimeSpan? contextRetention = null,
-        int contextMaxMessages = 4096)
+        int contextMaxMessages = 4096,
+        int groupMaxReplies = QQPassiveReplyWindow.DefaultGroupMaxReplies)
     {
         _context = new QQIncomingMessageContext(contextRetention, contextMaxMessages, logger);
-        _window = new QQPassiveReplyWindow();
+        _window = new QQPassiveReplyWindow(groupMaxReplies);
         _outbound = new QQOutboundMessagePipeline(api, _context, _window, logger, getSelfUser);
     }
 

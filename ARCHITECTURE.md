@@ -123,7 +123,7 @@ host
   -> QQMessageService
        -> QQOutboundMessagePipeline
             capabilities / segments / chunking / media
-            QQPassiveReplyWindow: msg_seq + 5min/5reply or 60min/4reply
+            QQPassiveReplyWindow: msg_seq + group 60min/5reply (50 when developer is owner/admin) or C2C 60min/4reply; limits follow the source message
             QQOutboundContent (Text / Markdown / Card / Ark / Embed / Media)
        -> QQOpenApiClient.SendAsync
             BuildRequest + ApplyReply + JSON

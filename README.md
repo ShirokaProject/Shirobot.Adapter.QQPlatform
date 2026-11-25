@@ -26,6 +26,7 @@ ShiroBot 适配器生态中的一员，负责接入 QQ 官方机器人。
 
 | 日期 | 更新内容 |
 | --- | --- |
+| [**20261117**](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html#_20261117) | 群消息被动回复有效期延长到 60 分钟；开发者是群主或管理员时每条群消息可回复 50 次（配置“开发者是群主或管理员”）；群消息可在私聊被动回复发送者，与群内回复共用次数。 |
 | [**20261116**](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html#_20261116) | 用户资料、昵称、头像、群昵称，以及群统一标识 `union_group_openid`。 |
 | [**20261028**](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html#_20261028) | 群聊、私聊图文卡片。 |
 | [**20261026**](https://bot.q.qq.com/wiki/develop/api-v2/changelog.html#_20261026) | 群聊文本和 Markdown @全体成员。 |

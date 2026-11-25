@@ -700,11 +700,13 @@ public sealed class AdapterTests
         Assert.Equal(2, handler.Requests.Count);
     }
 
-    private static QQMessageService NewMessages(FakeHandler handler, out HttpClient http)
+    private static QQMessageService NewMessages(FakeHandler handler, out HttpClient http,
+        int groupMaxReplies = QQPassiveReplyWindow.DefaultGroupMaxReplies)
     {
         http = new HttpClient(handler);
         var config = new QQPlatformConfig { AppId = "app", AppSecret = "secret" };
-        return new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)));
+        return new QQMessageService(new QQOpenApiClient(http, config, new QQTokenProvider(http, config)),
+            groupMaxReplies: groupMaxReplies);
     }
 
     private static MessageEvent Incoming(string id, Channel channel) => new()
@@ -756,6 +758,63 @@ public sealed class AdapterTests
             if (i <= limit)
             {
                 Assert.Equal("incoming", body.GetProperty("msg_id").GetString());
+                Assert.Equal(i, body.GetProperty("msg_seq").GetInt32());
+            }
+            else Assert.False(body.TryGetProperty("msg_id", out _));
+        }
+    }
+
+    [Fact]
+    public void GroupMessagesCanBeRepliedToForSixtyMinutes()
+    {
+        // 2026-11-17: the group passive reply window went from five to sixty minutes.
+        var window = new QQPassiveReplyWindow();
+        var group = Channel.Group("g");
+        Assert.True(window.CanReply(group, "m", DateTimeOffset.UtcNow.AddMinutes(-30)));
+        Assert.False(window.CanReply(group, "m", DateTimeOffset.UtcNow.AddMinutes(-61)));
+    }
+
+    [Fact]
+    public async Task DeveloperAdminSettingRaisesTheGroupReplyCapToFifty()
+    {
+        var handler = new FakeHandler();
+        var messages = NewMessages(handler, out var http, QQPassiveReplyWindow.ElevatedGroupMaxReplies);
+        using var httpScope = http;
+        var channel = Channel.Group("g");
+        messages.RegisterIncoming(Incoming("incoming", channel));
+        for (var i = 1; i <= 51; i++)
+        {
+            await messages.SendMessageAsync(channel, [new TextSegment($"reply {i}")]);
+            var body = LastMessageBody(handler);
+            if (i <= 50) Assert.Equal(i, body.GetProperty("msg_seq").GetInt32());
+            else Assert.False(body.TryGetProperty("msg_id", out _));
+        }
+        Assert.Equal(50, new QQPlatformConfig { DeveloperIsGroupAdmin = true }.GroupMaxPassiveReplies);
+        Assert.Equal(5, new QQPlatformConfig().GroupMaxPassiveReplies);
+    }
+
+    [Fact]
+    public async Task GroupMessageCanBeAnsweredPrivatelyAndSharesTheGroupReplyCount()
+    {
+        // 2026-11-17: a group message's msg_id may be used on the C2C endpoint to reply privately to its sender;
+        // those replies share the group message's window and count.
+        var handler = new FakeHandler();
+        var messages = NewMessages(handler, out var http);
+        using var httpScope = http;
+        messages.RegisterIncoming(Incoming("group-msg", Channel.Group("g")));
+        await messages.SendMessageAsync(Channel.Group("g"), [new TextSegment("in group")]);
+        for (var i = 2; i <= 6; i++)
+        {
+            await messages.SendMessageAsync(Channel.Direct("user"),
+                [new QuoteSegment("group-msg"), new TextSegment($"private {i}")]);
+            var request = handler.Requests[^1];
+            var body = LastMessageBody(handler);
+            Assert.EndsWith("/v2/users/user/messages", request.Uri);
+            Assert.False(body.TryGetProperty("message_reference", out _));
+            if (i <= 5)
+            {
+                // Direct replies alone would stop at four; a group source keeps the group's five.
+                Assert.Equal("group-msg", body.GetProperty("msg_id").GetString());
                 Assert.Equal(i, body.GetProperty("msg_seq").GetInt32());
             }
             else Assert.False(body.TryGetProperty("msg_id", out _));

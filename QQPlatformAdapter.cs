@@ -82,7 +82,8 @@ public sealed class QQPlatformAdapter : IBotAdapter, IConfigurableAdapter, IConf
         await ResolveIdentityAsync(api).ConfigureAwait(false);
 
         _messages = new QQMessageService(api, Logger, () => _users.Self,
-            TimeSpan.FromMinutes(config.MessageContextRetentionMinutes), config.MessageContextMaxMessages);
+            TimeSpan.FromMinutes(config.MessageContextRetentionMinutes), config.MessageContextMaxMessages,
+            config.GroupMaxPassiveReplies);
         var groupNames = new QQGroupNameCache(api, Logger, config.TraceEvents);
         _officialMedia = new QQOfficialMediaService(api, _messages, Logger, groupNames.GetCached);
         _officialMessages = new QQOfficialMessageService(api, _messages, Logger, groupNames.GetCached, _officialMedia);

@@ -68,6 +68,15 @@ public sealed class QQPlatformConfig
         Group = "context", GroupLabel = "消息上下文", GroupOrder = 45, Order = 20)]
     public int MessageContextMaxMessages { get; set; } = 4096;
 
+    [ConfigField("机器人开发者是群主或管理员时，QQ 允许每条群消息被动回复 50 次（否则 5 次），群内回复和私聊回复共用这个次数。开启后按 50 次计算；在开发者不是群主或管理员的群里，超出 5 次的回复会被 QQ 拒绝并自动改为主动消息。",
+        Label = "开发者是群主或管理员", Default = false,
+        Group = "context", GroupLabel = "消息上下文", GroupOrder = 45, Order = 30)]
+    public bool DeveloperIsGroupAdmin { get; set; }
+
+    internal int GroupMaxPassiveReplies => DeveloperIsGroupAdmin
+        ? AdapterImpl.Messaging.QQPassiveReplyWindow.ElevatedGroupMaxReplies
+        : AdapterImpl.Messaging.QQPassiveReplyWindow.DefaultGroupMaxReplies;
+
     [ConfigField("获取访问令牌的 HTTPS 地址，通常无需修改。",
         Label = "令牌接口地址", Default = "https://api.bot.qq.com/app/getAppAccessToken",
         Group = "advanced", GroupLabel = "高级", GroupOrder = 50, Order = 10)]

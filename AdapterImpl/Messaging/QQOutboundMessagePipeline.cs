@@ -378,10 +378,10 @@ internal sealed class QQOutboundMessagePipeline(
     };
 
     private bool CanReplyPassively(Channel channel, string messageId) =>
-        window.CanReply(channel, messageId, context.ArrivalOf(messageId));
+        window.CanReply(channel, messageId, context.ArrivalOf(messageId), context.SourceTypeOf(messageId));
 
     private string? TryRecentMessageId(Channel channel) =>
-        context.TryRecentMessageId(channel, QQPassiveReplyWindow.Limits(channel).Window);
+        context.TryRecentMessageId(channel, window.Limits(channel.Type).Window);
 
     private static bool IsSafeOpenId(string userId) =>
         userId is { Length: > 0 and <= 128 } && userId.All(c => c is >= 'A' and <= 'Z'

@@ -20,7 +20,7 @@ internal sealed class QQIncomingMessageContext : IDisposable
     private readonly IConsoleLogger? _logger;
     private readonly Dictionary<string, (string MessageId, DateTimeOffset SeenAt)> _recent = [];
     private readonly Queue<string> _recentOrder = new();
-    private readonly Dictionary<string, DateTimeOffset> _arrivals = [];
+    private readonly Dictionary<string, (DateTimeOffset At, ChannelType Type)> _arrivals = [];
     private readonly Queue<string> _arrivalOrder = new();
     private readonly Dictionary<string, QOfficialMessageReply> _interactionReplies = new(StringComparer.Ordinal);
     private readonly Queue<string> _interactionReplyOrder = new();
@@ -43,7 +43,8 @@ internal sealed class QQIncomingMessageContext : IDisposable
         }
         lock (_arrivals)
         {
-            if (_arrivals.TryAdd(message.MessageId, DateTimeOffset.UtcNow)) _arrivalOrder.Enqueue(message.MessageId);
+            if (_arrivals.TryAdd(message.MessageId, (DateTimeOffset.UtcNow, message.Channel.Type)))
+                _arrivalOrder.Enqueue(message.MessageId);
             while (_arrivalOrder.Count > Capacity) _arrivals.Remove(_arrivalOrder.Dequeue());
         }
 
@@ -113,7 +114,13 @@ internal sealed class QQIncomingMessageContext : IDisposable
 
     public DateTimeOffset? ArrivalOf(string messageId)
     {
-        lock (_arrivals) return _arrivals.TryGetValue(messageId, out var arrivedAt) ? arrivedAt : null;
+        lock (_arrivals) return _arrivals.TryGetValue(messageId, out var arrival) ? arrival.At : null;
+    }
+
+    /// <summary>Where a received message arrived: group messages keep group reply limits even when answered privately.</summary>
+    public ChannelType? SourceTypeOf(string messageId)
+    {
+        lock (_arrivals) return _arrivals.TryGetValue(messageId, out var arrival) ? arrival.Type : null;
     }
 
     public string? TryRecentMessageId(Channel channel, TimeSpan window)
